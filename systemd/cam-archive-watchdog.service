@@ -1,0 +1,6 @@
+[Unit]
+Description=Сторож записи архива камер (перезапуск зависшей записи)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cam-archive-watchdog

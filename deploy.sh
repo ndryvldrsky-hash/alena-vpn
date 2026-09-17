@@ -15,6 +15,9 @@ SCP="scp -F /config/.ssh/config"
 FILES=(
   "cam-archive/cam-archive-record|/usr/local/sbin/cam-archive-record|755"
   "cam-archive/cam-archive-status|/usr/local/sbin/cam-archive-status|755"
+  "cam-archive/cam-archive-watchdog|/usr/local/sbin/cam-archive-watchdog|755"
+  "systemd/cam-archive-watchdog.service|/etc/systemd/system/cam-archive-watchdog.service|644"
+  "systemd/cam-archive-watchdog.timer|/etc/systemd/system/cam-archive-watchdog.timer|644"
   "cam-archive/cam_archive_web.py|/usr/local/lib/cam-archive-web/app.py|755"
   "systemd/cam-archive@.service|/etc/systemd/system/cam-archive@.service|644"
   "systemd/cam-archive-clean.service|/etc/systemd/system/cam-archive-clean.service|644"
@@ -52,6 +55,7 @@ deploy)
   fi
   [[ "$s" == *cam-archive-web* || "$s" == *app.py* ]] && $SSH "systemctl restart cam-archive-web" && echo "перезапущен веб-плеер"
   [[ "$s" == *cam-archive-clean* ]] && $SSH "systemctl restart cam-archive-clean.timer" && echo "перезапущен таймер очистки"
+  [[ "$s" == *cam-archive-watchdog* ]] && $SSH "systemctl enable --now cam-archive-watchdog.timer >/dev/null 2>&1; systemctl restart cam-archive-watchdog.timer" && echo "перезапущен сторож записи"
   [[ "$s" == *iperf3-wg* ]] && $SSH "systemctl restart iperf3-wg" && echo "перезапущен iperf3"
   ;;
 pull)

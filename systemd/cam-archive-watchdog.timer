@@ -1,0 +1,10 @@
+[Unit]
+Description=Проверять запись архива камер раз в 2 минуты
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

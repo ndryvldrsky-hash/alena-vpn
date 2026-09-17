@@ -1,0 +1,14 @@
+#!/bin/bash
+# Сторож записи архива: если служба активна, а новых кусков нет больше STALE секунд — перезапустить её.
+# 2026-09-17: при обрыве туннеля ffmpeg не завершился, а завис (-timeout не сработал), запись встала на 3 часа незаметно.
+STALE=${STALE:-180}
+now=$(date +%s)
+for d in /var/lib/cam-archive/*/; do
+  cam=$(basename "$d"); [ "$cam" = events ] && continue
+  systemctl is-active -q "cam-archive@$cam" || continue
+  newest=$(ls -1t "$d"*.mkv 2>/dev/null | head -1)
+  if [ -z "$newest" ] || [ $((now - $(stat -c %Y "$newest"))) -gt "$STALE" ]; then
+    echo "$(date '+%F %T') $cam: новых кусков нет — перезапуск записи"
+    systemctl restart "cam-archive@$cam"
+  fi
+done
