@@ -1,0 +1,14 @@
+# Тест скорости туннеля для службы alena-vps на Коине: iperf3 только на адресе внутри WireGuard (снаружи недоступен)
+[Unit]
+Description=iperf3 внутри туннеля wg0 (тест скорости канала Коина)
+After=wg-quick@wg0.service
+Requires=wg-quick@wg0.service
+
+[Service]
+ExecStart=/usr/bin/iperf3 -s -B 10.77.0.1 -p 5201
+Restart=always
+RestartSec=5
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+# Репозиторий ПУБЛИЧНЫЙ: всё с секретами и адресами сетей — только через git-crypt (ключ /config/.claude/alena_vpn_config.key).
+secrets/** filter=git-crypt diff=git-crypt
+wireguard/** filter=git-crypt diff=git-crypt
+nftables.conf filter=git-crypt diff=git-crypt
+*.env filter=git-crypt diff=git-crypt
+*.key filter=git-crypt diff=git-crypt

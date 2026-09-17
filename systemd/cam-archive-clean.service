@@ -1,0 +1,8 @@
+[Unit]
+Description=Удалить куски архива камер старше часа
+
+[Service]
+Type=oneshot
+User=camarchive
+# кусок пишется минуту: последний модифицирован не раньше его конца, +61 мин = всё, что целиком старше часа
+ExecStart=/usr/bin/find /var/lib/cam-archive -type f -name "*.mkv" -mmin +61 -delete

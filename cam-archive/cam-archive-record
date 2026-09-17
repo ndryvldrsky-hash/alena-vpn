@@ -1,0 +1,15 @@
+#!/bin/bash
+# Запись субпотока камеры с go2rtc Frigate (Оптиплекс 192.168.77.2:28554 — порт RTSP Frigate на хосте, через WireGuard и Коин) — без перекодирования,
+# минутными кусками. Хранится последний час (чистит cam-archive-clean.timer). 2026-09-17.
+# $1 — имя камеры во Frigate; поток берётся как <камера>_sub. Креды — /etc/cam-archive/rtsp.env (EnvironmentFile службы).
+set -eu
+CAM=$1; DIR=/var/lib/cam-archive/$CAM
+mkdir -p "$DIR"
+# mkv, а не mp4: субпотоки HEVC со звуком G.711 A-law, в mp4 такой звук нормально не кладётся.
+# -timeout (мкс) — обрыв RTSP завершает ffmpeg, systemd перезапускает.
+exec ffmpeg -hide_banner -loglevel warning -nostdin \
+  -rtsp_transport tcp -timeout 15000000 \
+  -i "rtsp://${RTSP_USER}:${RTSP_PASS}@192.168.77.2:28554/${CAM}_sub" \
+  -map 0 -c copy \
+  -f segment -segment_time 60 -segment_format matroska -reset_timestamps 1 -strftime 1 \
+  "$DIR/%Y%m%d_%H%M%S.mkv"

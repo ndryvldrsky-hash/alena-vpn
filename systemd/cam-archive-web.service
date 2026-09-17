@@ -1,0 +1,14 @@
+[Unit]
+Description=Веб-плеер архива камер (127.0.0.1:8080, наружу — tailscale serve)
+After=network-online.target
+
+[Service]
+User=camarchive
+CacheDirectory=cam-archive-web
+ExecStart=/usr/bin/python3 /usr/local/lib/cam-archive-web/app.py
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
