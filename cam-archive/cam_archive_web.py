@@ -244,15 +244,48 @@ main{max-width:1200px;margin:0 auto;padding:14px 16px}
 .evi .dot{width:8px;height:8px;border-radius:50%;flex:none}
 .hint{color:var(--muted);font-size:13px;margin-top:14px}
 @media (max-width:600px){.tl-labels{width:56px}.tl-label{font-size:12px}.osd b{font-size:17px}}
+/* 2026-09-18: панель управления и таймлайн поверх видео (по просьбе пользователя), как экранное меню плеера:
+   полупрозрачный слой с размытием внизу кадра над штатной полоской Plyr, прячется вместе с ней при бездействии мыши.
+   Переключатель «поверх видео» в шапке (запоминается в localStorage); выключен — прежняя раскладка под видео. */
+body.over main{max-width:none;padding:0}
+body.over .player{border-radius:0;box-shadow:none}
+body.over .player video{max-height:none;height:calc(100vh - 54px);object-fit:contain}
+body.over .plyr{border-radius:0}
+.over-wrap{position:absolute;left:0;right:0;bottom:50px;z-index:4;padding:0 10px;pointer-events:none;transition:opacity .3s}
+.over-wrap>*{pointer-events:auto}
+.plyr--hide-controls .over-wrap{opacity:0;pointer-events:none}
+.over-wrap .bar{margin:0 0 6px;padding-right:64px;color:#fff}  /* справа место под кнопку «картинка в картинке», которую браузер рисует поверх видео */
+/* сами элементы слоя тоже полупрозрачные (пожелание пользователя): фоны с альфой, сегменты и кнопки просвечивают видео */
+.over-wrap .bar .grp,.over-wrap .bar>button{background:rgba(0,0,0,.28);border-color:rgba(255,255,255,.14);color:rgba(255,255,255,.85);backdrop-filter:blur(5px)}
+.over-wrap .bar .grp button{color:rgba(255,255,255,.85)}
+.over-wrap .bar .grp button.on,.over-wrap .bar>button.on{background:rgba(255,122,69,.6);color:#fff}
+.over-wrap .bar a{color:rgba(255,179,71,.85)}.over-wrap .muted{color:rgba(255,255,255,.65)}
+.over-wrap .tl{background:rgba(0,0,0,.28);border-color:rgba(255,255,255,.12);backdrop-filter:blur(5px);padding:6px 10px 8px;color:rgba(255,255,255,.85)}
+.over-wrap .seg{background:rgba(190,200,215,.35)}.over-wrap .seg.ready{background:rgba(70,180,120,.5)}.over-wrap .seg.writing{background:rgba(230,190,90,.5)}
+.over-wrap .seg.play{box-shadow:inset 0 0 0 2px rgba(255,179,71,.9)}
+.over-wrap .track.on{box-shadow:inset 0 0 0 1px rgba(255,122,69,.8)}
+.over-wrap .ev{opacity:.8}.over-wrap .head{background:rgba(255,77,79,.85)}
+.over-wrap .tl-labels{padding-top:16px;width:74px}
+.over-wrap .tl-label{height:22px;margin-top:3px;color:rgba(255,255,255,.65);font-size:12px}
+.over-wrap .tl-label.on{color:rgba(255,179,71,.95)}
+.over-wrap .ticks{height:16px;color:rgba(255,255,255,.6)}
+.over-wrap .ticks .tk{border-color:rgba(255,255,255,.3)}.over-wrap .ticks .tk.major{border-color:rgba(255,255,255,.7)}
+.over-wrap .track{height:22px;margin-top:3px;background:rgba(255,255,255,.08)}
+.over-wrap .seg{top:3px;bottom:3px}.over-wrap .ev{height:9px;bottom:1px}
+.over-wrap .head{top:16px}.over-wrap .hover{top:16px;background:#fff}.over-wrap .hover span{background:#fff;color:#000}
+.over-wrap .legend{margin-top:6px;color:rgba(255,255,255,.7);font-size:11px;gap:10px}
+.over-wrap .tl-row{max-height:38vh;overflow-y:auto}
+@media (max-width:600px){.over-wrap .tl-labels{width:50px}.over-wrap .bar .grp button{padding:4px 8px}}
 </style></head><body>
 <header><h1><span class="rec"></span>Архив камер</h1><span class="sub">последний час · <span id="upd">…</span></span><span style="flex:1"></span>
 <div class="bar" style="margin:0"><div class="grp"><button id="m264" class="on" title="Перекодирование в H.264 — играет везде, новая минута готовится ~10 с">H.264</button>
-<button id="mhevc" title="Оригинальный HEVC без перекодирования — быстро, но играет не в каждом браузере">Оригинал</button></div></div></header>
+<button id="mhevc" title="Оригинальный HEVC без перекодирования — быстро, но играет не в каждом браузере">Оригинал</button></div>
+<label class="muted" title="Панель управления и таймлайн полупрозрачным слоем поверх видео"><input type="checkbox" id="overchk"> поверх видео</label></div></header>
 <main>
 <div class="player"><video id="v" playsinline controls></video>
   <div class="osd" id="osd"><b id="osdt"></b><span id="osdc"></span></div>
   <div class="status" id="st"></div></div>
-<div class="bar">
+<div class="bar" id="bar">
   <div class="grp"><button id="bm60" title="−1 минута (Shift+←)">⏪ 1 мин</button><button id="bm10" title="−10 секунд (←)">↶ 10 с</button>
   <button id="bpp" title="Пауза / воспроизведение (пробел)">⏯</button>
   <button id="bp10" title="+10 секунд (→)">10 с ↷</button><button id="bp60" title="+1 минута (Shift+→)">1 мин ⏩</button></div>
@@ -292,7 +325,7 @@ if(window.Plyr){
     i18n:{play:'Воспроизвести',pause:'Пауза',mute:'Выключить звук',unmute:'Включить звук',settings:'Настройки',speed:'Скорость',normal:'Обычная',
       enterFullscreen:'Во весь экран',exitFullscreen:'Выйти из полноэкранного режима',pip:'Картинка в картинке',volume:'Громкость',seek:'Перемотка',currentTime:'Текущее время'}});
   // OSD и статус — внутрь контейнера Plyr, чтобы были видны и во весь экран
-  plyr.on('ready',()=>{const c=plyr.elements.container;c.appendChild($('osd'));c.appendChild($('st'))});
+  plyr.on('ready',()=>{const c=plyr.elements.container;c.appendChild($('osd'));c.appendChild($('st'));setOver(localStorage.getItem('over')!=='0')});
 }
 
 function st(t,spin){$('st').innerHTML=t?(spin?'<span class="spin"></span>':'')+t:'';$('st').style.display=t?'block':'none'}
@@ -438,6 +471,22 @@ function setMode(m){const a=curAbs();mode=m;$('m264').className=m==='h264'?'on':
   if(cur&&a!=null){const c=cur.cam;cur=null;seekAbs(c,a)}else render()}
 $('m264').onclick=()=>setMode('h264');$('mhevc').onclick=()=>setMode('hevc');
 window.addEventListener('resize',render);
+// слой поверх видео: панель (#bar) и таймлайн (#tl) переезжают внутрь контейнера Plyr (работает и в полноэкранном режиме)
+let overWrap=null, overHome=null;
+function setOver(on){
+  const bar=$('bar'), tl=$('tl');
+  if(on){
+    const c=plyr?plyr.elements.container:null; if(!c)return;
+    if(!overHome){overHome=document.createElement('div');overHome.style.display='none';bar.parentNode.insertBefore(overHome,bar)}
+    if(!overWrap){overWrap=document.createElement('div');overWrap.className='over-wrap'}
+    overWrap.appendChild(bar);overWrap.appendChild(tl);c.appendChild(overWrap);document.body.classList.add('over');
+  }else{
+    if(overHome){overHome.parentNode.insertBefore(bar,overHome);overHome.parentNode.insertBefore(tl,overHome)}
+    if(overWrap&&overWrap.parentNode)overWrap.parentNode.removeChild(overWrap);document.body.classList.remove('over');
+  }
+  $('overchk').checked=on;localStorage.setItem('over',on?'1':'0');render();
+}
+$('overchk').onchange=()=>setOver($('overchk').checked);
 renderSpeeds();load();setInterval(load,20000);
 </script></body></html>"""
 
