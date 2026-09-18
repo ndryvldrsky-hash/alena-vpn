@@ -79,6 +79,22 @@ def stream_start(path, kind):
     return min(vals) if vals else 0.0
 
 
+_vcodec_cache = {}
+
+
+def video_codec(path, cam):
+    """Кодек видео куска (по камере кэшируем — у одной камеры он постоянный). 2026-09-18: axis_2100/imac/xps пишутся
+    основным потоком в H.264 — такой кусок в mp4 переупаковываем без перекодирования, а не гоняем libx264 на 1 vCPU."""
+    if cam in _vcodec_cache:
+        return _vcodec_cache[cam]
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
+                        "-of", "csv=p=0", path], capture_output=True, text=True, timeout=30)
+    codec = r.stdout.strip() or "unknown"
+    if codec != "unknown":
+        _vcodec_cache[cam] = codec
+    return codec
+
+
 def ensure_mp4(cam, name, mode):
     """Готовый mp4 в кэше (перекодирование или переупаковка). None — исходника нет или ffmpeg упал."""
     src = os.path.join(ARCHIVE, cam, name)
@@ -99,9 +115,13 @@ def ensure_mp4(cam, name, mode):
         # Начало видео и звука сводим в ноль: при перекодировании — setpts/asetpts, в режиме «оригинал» (видео
         # без перекодирования фильтр не применить) — сдвигом входа видео на его стартовую метку.
         vstart = stream_start(src, "v")
-        if mode == "hevc":
+        codec = video_codec(src, cam)
+        if mode == "hevc" or codec == "h264":
+            # копия видео: HEVC по просьбе «оригинал» либо источник уже H.264 (полные потоки axis_2100/imac/xps)
             inputs = ["-itsoffset", f"{-vstart:.3f}", "-i", src, "-i", src]
-            vargs = ["-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy", "-tag:v", "hvc1", "-af", "asetpts=PTS-STARTPTS"]
+            vargs = ["-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy", "-af", "asetpts=PTS-STARTPTS"]
+            if codec != "h264":
+                vargs += ["-tag:v", "hvc1"]
         else:
             inputs = ["-i", src]
             vargs = ["-map", "0:v:0", "-map", "0:a:0?", "-vf", "setpts=PTS-STARTPTS", "-af", "asetpts=PTS-STARTPTS",

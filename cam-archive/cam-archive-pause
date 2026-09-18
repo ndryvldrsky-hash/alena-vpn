@@ -1,0 +1,25 @@
+#!/bin/bash
+# Пауза архива камер на VPS. 2026-09-18: с добавлением полных потоков axis_2100/imac/xps архив стал ~6–7 Мбит/с —
+# по оптике незаметно, а телефонный канал он душит (17.09 при 0,6 Мбит/с отдача телефона теряла 40–50 % пакетов).
+# HA (автоматизация cam_archive_vps_pause_on_phone) вызывает `on`, когда туннель Коина идёт через телефон, и `off`,
+# когда вернулась оптика. Флаг /var/lib/cam-archive/.paused — чтобы статус (cam-archive-status) и сторож знали причину.
+#   cam-archive-pause on      — остановить все включённые cam-archive@<камера>
+#   cam-archive-pause off     — запустить обратно
+#   cam-archive-pause status  — paused|recording
+set -eu
+FLAG=/var/lib/cam-archive/.paused
+units() { ls /etc/systemd/system/multi-user.target.wants/cam-archive@*.service 2>/dev/null | xargs -rn1 basename; }
+case "${1:-status}" in
+  on)
+    touch "$FLAG"
+    systemctl stop $(units) 2>/dev/null || true
+    # ffmpeg завершается по SIGTERM с ненулевым кодом — юниты повисают в «failed»; сбрасываем, это штатная остановка
+    systemctl reset-failed $(units) 2>/dev/null || true
+    echo "paused: $(units | tr '\n' ' ')" ;;
+  off)
+    rm -f "$FLAG"
+    systemctl start $(units)
+    echo "recording: $(units | tr '\n' ' ')" ;;
+  status) [ -f "$FLAG" ] && echo paused || echo recording ;;
+  *) echo "usage: $0 on|off|status" >&2; exit 2 ;;
+esac

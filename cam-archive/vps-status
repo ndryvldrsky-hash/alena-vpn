@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+# Статус самого VPS alena-vpn для вкладки «VPS» на «май» (command_line по SSH из HA, 2026-09-18): нагрузка, CPU с долей
+# steal (виртуалка за 4 $ — сосед по гипервизору отбирает такты), память, диск, аптайм, службы, пиры WireGuard
+# (рукопожатие/трафик), Tailscale, скорость на eth0/wg0 за 2 с. Состояние для HA — число проблем (0 = ок).
+import json, os, shutil, subprocess, time
+
+SERVICES = ["wg-quick@wg0", "nftables", "tailscaled", "cam-archive-web", "cam-archive-clean.timer",
+            "cam-archive-watchdog.timer", "iperf3-wg"]
+PEERS = {"10.77.0.2/32": "Коин wg-vps", "10.77.0.3/32": "Коин wg-vps2"}
+
+
+def run(cmd, t=10):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=t).stdout
+    except Exception:
+        return ""
+
+
+def cpu_times():
+    f = open("/proc/stat").readline().split()[1:]
+    v = list(map(int, f))
+    return sum(v), v[3] + v[4], v[7] if len(v) > 7 else 0  # total, idle+iowait, steal
+
+
+def net_bytes(ifs):
+    out = {}
+    for i in ifs:
+        try:
+            rx = int(open(f"/sys/class/net/{i}/statistics/rx_bytes").read())
+            tx = int(open(f"/sys/class/net/{i}/statistics/tx_bytes").read())
+            out[i] = (rx, tx)
+        except FileNotFoundError:
+            pass
+    return out
+
+
+ifs = ["eth0", "wg0", "tailscale0"]
+c0, n0, t0 = cpu_times(), net_bytes(ifs), time.time()
+time.sleep(2)
+c1, n1, t1 = cpu_times(), net_bytes(ifs), time.time()
+dt = max(t1 - t0, 0.5)
+tot = max(c1[0] - c0[0], 1)
+cpu = {"busy_pct": round(100 * (1 - (c1[1] - c0[1]) / tot), 1), "steal_pct": round(100 * (c1[2] - c0[2]) / tot, 1)}
+net = {i: {"rx_kbps": round((n1[i][0] - n0[i][0]) * 8 / dt / 1000, 1), "tx_kbps": round((n1[i][1] - n0[i][1]) * 8 / dt / 1000, 1),
+           "rx_gb": round(n1[i][0] / 1073741824, 2), "tx_gb": round(n1[i][1] / 1073741824, 2)} for i in n1}
+
+load = open("/proc/loadavg").read().split()[:3]
+uptime_s = float(open("/proc/uptime").read().split()[0])
+mem = {}
+for line in open("/proc/meminfo"):
+    k, v = line.split(":")
+    mem[k] = int(v.split()[0])
+memory = {"total_mb": round(mem["MemTotal"] / 1024), "available_mb": round(mem["MemAvailable"] / 1024),
+          "used_pct": round(100 * (1 - mem["MemAvailable"] / mem["MemTotal"]))}
+du = shutil.disk_usage("/")
+disk = {"total_gb": round(du.total / 1073741824, 1), "free_gb": round(du.free / 1073741824, 2), "used_pct": round(100 * du.used / du.total)}
+
+services = {}
+for s in SERVICES:
+    services[s] = run(["systemctl", "is-active", s]).strip() or "unknown"
+archive_units = [u.split()[0] for u in run(["systemctl", "list-units", "--plain", "--no-legend", "cam-archive@*"]).splitlines() if u.strip()]
+services["cam-archive@*"] = "%d активных" % sum(1 for u in archive_units if run(["systemctl", "is-active", u]).strip() == "active")
+paused = os.path.exists("/var/lib/cam-archive/.paused")
+
+peers = []
+now = int(time.time())
+for line in run(["wg", "show", "wg0", "dump"]).splitlines()[1:]:
+    f = line.split("\t")
+    if len(f) < 8:
+        continue
+    hs = int(f[4]); allowed = f[3]
+    name = next((n for a, n in PEERS.items() if a in allowed), allowed)
+    peers.append({"name": name, "allowed": allowed, "endpoint": f[2] if f[2] != "(none)" else "",
+                  "handshake_age_s": (now - hs) if hs else None, "rx_mb": round(int(f[5]) / 1048576, 1), "tx_mb": round(int(f[6]) / 1048576, 1)})
+
+ts = {}
+try:
+    d = json.loads(run(["tailscale", "status", "--json"], 15) or "{}")
+    s = d.get("Self", {})
+    ts = {"state": d.get("BackendState"), "online": s.get("Online"), "ip": (s.get("TailscaleIPs") or [""])[0], "host": s.get("HostName")}
+except Exception as e:
+    ts = {"state": "error", "error": str(e)[:80]}
+
+problems = []
+for s, st in services.items():
+    if s != "cam-archive@*" and st != "active":
+        problems.append("%s: %s" % (s, st))
+if disk["free_gb"] < 1.5:
+    problems.append("диск: свободно %s ГБ" % disk["free_gb"])
+if memory["available_mb"] < 60:
+    problems.append("память: доступно %d МБ" % memory["available_mb"])
+main_peer = next((p for p in peers if p["name"] == "Коин wg-vps"), None)
+if not main_peer or main_peer["handshake_age_s"] is None or main_peer["handshake_age_s"] > 300:
+    problems.append("туннель Коина: нет рукопожатия > 5 мин")
+if ts.get("state") != "Running" or not ts.get("online"):
+    problems.append("Tailscale: %s" % ts.get("state"))
+if cpu["steal_pct"] >= 25:
+    problems.append("CPU steal %s %%" % cpu["steal_pct"])
+
+print(json.dumps({"problems": len(problems), "problem_list": problems, "load": load, "cpu": cpu, "memory": memory, "disk": disk,
+                  "uptime_h": round(uptime_s / 3600, 1), "services": services, "archive_paused": paused, "peers": peers,
+                  "tailscale": ts, "net": net, "checked": time.strftime("%H:%M:%S")}, ensure_ascii=False))

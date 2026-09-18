@@ -3,6 +3,7 @@
 # 2026-09-17: при обрыве туннеля ffmpeg не завершился, а завис (-timeout не сработал), запись встала на 3 часа незаметно.
 STALE=${STALE:-180}
 now=$(date +%s)
+[ -f /var/lib/cam-archive/.paused ] && exit 0   # архив на паузе (cam-archive-pause) — службы остановлены намеренно
 for d in /var/lib/cam-archive/*/; do
   cam=$(basename "$d"); [ "$cam" = events ] && continue
   systemctl is-active -q "cam-archive@$cam" || continue

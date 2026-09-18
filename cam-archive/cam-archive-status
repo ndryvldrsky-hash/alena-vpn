@@ -4,6 +4,7 @@
 import json, os, shutil, subprocess, time
 BASE = "/var/lib/cam-archive"
 now = time.time(); cams = {}; ok = 0
+paused = os.path.exists(os.path.join(BASE, ".paused"))  # cam-archive-pause on (туннель через телефон)
 for c in sorted(os.listdir(BASE)):
     d = os.path.join(BASE, c)
     if c == "events" or not os.path.isdir(d): continue  # events — папка событий Frigate для плеера, не камера
@@ -15,6 +16,6 @@ for c in sorted(os.listdir(BASE)):
     cams[c] = {"recording": rec, "service": active, "last_age_s": age, "minutes": len(files),
                "mb": round(sum(os.path.getsize(f) for f in files) / 1048576, 1)}
 du = shutil.disk_usage("/")
-print(json.dumps({"recording": ok, "total": len(cams), "cameras": cams,
+print(json.dumps({"recording": ok, "total": len(cams), "paused": paused, "cameras": cams,
                   "archive_mb": round(sum(v["mb"] for v in cams.values()), 1),
                   "disk_free_gb": round(du.free / 1073741824, 2)}, ensure_ascii=False))

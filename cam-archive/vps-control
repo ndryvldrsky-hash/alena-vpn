@@ -1,0 +1,10 @@
+#!/bin/bash
+# Действия с вкладки «VPS» на «май» (shell_command.vps_control по SSH из HA), белый список. 2026-09-18.
+set -eu
+case "${1:-}" in
+  restart_web)      systemctl restart cam-archive-web; echo "плеер перезапущен" ;;
+  restart_archive)  systemctl restart $(systemctl list-units --plain --no-legend "cam-archive@*" | awk '{print $1}'); echo "запись перезапущена" ;;
+  restart_tailscale) systemctl restart tailscaled; echo "tailscaled перезапущен" ;;
+  reboot)           echo "перезагрузка VPS"; systemctl reboot ;;
+  *) echo "usage: $0 restart_web|restart_archive|restart_tailscale|reboot" >&2; exit 2 ;;
+esac

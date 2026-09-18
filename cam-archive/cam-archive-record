@@ -1,17 +1,24 @@
 #!/bin/bash
 # Запись субпотока камеры с go2rtc Frigate (Оптиплекс 192.168.77.2:28554 — порт RTSP Frigate на хосте, через WireGuard и Коин) — без перекодирования,
 # минутными кусками. Хранится последний час (чистит cam-archive-clean.timer). 2026-09-17.
-# $1 — имя камеры во Frigate; поток берётся как <камера>_sub. Креды — /etc/cam-archive/rtsp.env (EnvironmentFile службы).
+# $1 — имя камеры во Frigate; поток берётся как <камера>_sub (или основной — см. case ниже). Креды — /etc/cam-archive/rtsp.env (EnvironmentFile службы).
 set -eu
 CAM=$1; DIR=/var/lib/cam-archive/$CAM
 mkdir -p "$DIR"
+# 2026-09-18: у axis_2100, imac и xps субпотоков нет (перекодировать некому — Оптиплекс на пределе), пишем основной
+# поток как есть (H.264, ~1,5–2 Мбит/с каждая). Чтобы это не душило телефонный канал, HA ставит архив на паузу,
+# когда туннель идёт через телефон (cam-archive-pause, автоматизация cam_archive_vps_pause_on_phone).
+case "$CAM" in
+  axis_2100|imac|xps) STREAM=$CAM ;;
+  *) STREAM=${CAM}_sub ;;
+esac
 # mkv, а не mp4: субпотоки HEVC со звуком G.711 A-law, в mp4 такой звук нормально не кладётся.
 # -timeout (мкс) — обрыв RTSP завершает ffmpeg, systemd перезапускает.
 # -use_wallclock_as_timestamps: камера после переподключения отдаёт ломаные метки (Non-monotonic DTS), и сегментатор
 # нарезал куски по 2 с вместо минуты (2026-09-17: 427 файлов за полчаса) — время берём по часам сервера.
 exec ffmpeg -hide_banner -loglevel warning -nostdin \
   -rtsp_transport tcp -timeout 15000000 -use_wallclock_as_timestamps 1 -fflags +genpts \
-  -i "rtsp://${RTSP_USER}:${RTSP_PASS}@192.168.77.2:28554/${CAM}_sub" \
+  -i "rtsp://${RTSP_USER}:${RTSP_PASS}@192.168.77.2:28554/${STREAM}" \
   -map 0 -c copy \
   -f segment -segment_time 60 -segment_format matroska -reset_timestamps 1 -strftime 1 \
   "$DIR/%Y%m%d_%H%M%S.mkv"
