@@ -2,7 +2,7 @@
 """Веб-плеер архива камер на VPS alena-vpn (2026-09-17).
 
 Архив: /var/lib/cam-archive/<камера>/<ГГГГММДД_ЧЧММСС>.mkv — минутные куски субпотоков (HEVC + G.711), пишут службы
-cam-archive@<камера>, хранится последний час. Имена кусков — во времени VPS (UTC), на странице — по Израилю.
+cam-archive@<камера>, хранятся последние 6 часов. Имена кусков — во времени VPS (UTC), на странице — по Израилю.
 
 Браузеры HEVC в mkv не играют, поэтому выбранная минута перекодируется в H.264/AAC mp4 по запросу (на 1 vCPU ~7–10 с)
 и кладётся в кэш; следующая минута готовится заранее, чтобы воспроизведение шло подряд. Режим «оригинал» — только
@@ -277,7 +277,7 @@ body.over .plyr{border-radius:0}
 .over-wrap .tl-row{max-height:38vh;overflow-y:auto}
 @media (max-width:600px){.over-wrap .tl-labels{width:50px}.over-wrap .bar .grp button{padding:4px 8px}}
 </style></head><body>
-<header><h1><span class="rec"></span>Архив камер</h1><span class="sub">последний час · <span id="upd">…</span></span><span style="flex:1"></span>
+<header><h1><span class="rec"></span>Архив камер</h1><span class="sub">последние 6 часов · <span id="upd">…</span></span><span style="flex:1"></span>
 <div class="bar" style="margin:0"><div class="grp"><button id="m264" class="on" title="Перекодирование в H.264 — играет везде, новая минута готовится ~10 с">H.264</button>
 <button id="mhevc" title="Оригинальный HEVC без перекодирования — быстро, но играет не в каждом браузере">Оригинал</button></div>
 <label class="muted" title="Панель управления и таймлайн полупрозрачным слоем поверх видео"><input type="checkbox" id="overchk"> поверх видео</label></div></header>
