@@ -1,0 +1,63 @@
+#!/bin/bash
+# site-status — состояние статического сайта kulagin.org на этом сервере.
+# Отдаёт JSON для command_line-сенсора Home Assistant (sensor.sait_kulagin_org,
+# файл /config/command_line/site_kulagin.yaml, вкладка «Сайт» на дашборде «май»).
+# Раньше это же собирал только MCP-сервер vps (vps_status) — то есть видела одна Алёна,
+# а на дашборде состояния сайта не было вовсе.
+# Состояние сенсора = число проблем (0 = всё хорошо), подробности — в атрибутах.
+set -u
+
+DOMAIN="kulagin.org"
+ROOT="/var/www/${DOMAIN}"
+CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+
+nginx_state="$(systemctl is-active nginx 2>/dev/null || true)"
+certbot_state="$(systemctl is-active certbot.timer 2>/dev/null || true)"
+
+# --- сертификат Let's Encrypt: до какого числа и сколько суток осталось ---
+cert_until=""
+cert_days="null"
+if [ -r "$CERT" ]; then
+  end="$(openssl x509 -enddate -noout -in "$CERT" 2>/dev/null | cut -d= -f2)"
+  if [ -n "$end" ]; then
+    cert_until="$(date -u -d "$end" '+%Y-%m-%d' 2>/dev/null || true)"
+    ts="$(date -u -d "$end" +%s 2>/dev/null || echo 0)"
+    now="$(date -u +%s)"
+    [ "$ts" -gt 0 ] && cert_days=$(( (ts - now) / 86400 ))
+  fi
+fi
+
+# --- живой ответ основного адреса ---
+resp="$(curl -s -o /dev/null -w '%{http_code} %{size_download} %{time_total}' --max-time 10 "https://${DOMAIN}/" 2>/dev/null || echo '000 0 0')"
+http_code="$(echo "$resp" | awk '{print $1}')"
+size_bytes="$(echo "$resp" | awk '{print $2}')"
+resp_ms="$(echo "$resp" | awk '{printf "%.0f", $3 * 1000}')"
+
+# --- редирект http→https и алиас www ---
+redirect_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://${DOMAIN}/" 2>/dev/null || echo '000')"
+www_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://www.${DOMAIN}/" 2>/dev/null || echo '000')"
+
+# --- содержимое корня сайта ---
+files="$(find "$ROOT" -type f 2>/dev/null | wc -l | tr -d ' ')"
+bytes="$(du -sb "$ROOT" 2>/dev/null | cut -f1)"
+[ -z "$bytes" ] && bytes=0
+size_kb=$(( bytes / 1024 ))
+last_deploy="$(find "$ROOT" -type f -printf '%T@ %TY-%Tm-%Td %TH:%TM\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+
+# --- сводка проблем ---
+problems=0
+list=""
+add_problem() { problems=$(( problems + 1 )); [ -n "$list" ] && list="${list}, "; list="${list}\"$1\""; }
+
+[ "$nginx_state" = "active" ]   || add_problem "nginx не запущен (${nginx_state:-нет ответа})"
+[ "$certbot_state" = "active" ] || add_problem "certbot.timer не активен (${certbot_state:-нет ответа})"
+[ "$http_code" = "200" ]        || add_problem "сайт отвечает ${http_code}, а не 200"
+if [ "$cert_days" != "null" ] && [ "$cert_days" -lt 14 ]; then
+  add_problem "сертификат истекает через ${cert_days} сут"
+fi
+[ "$files" -gt 0 ] || add_problem "в корне сайта нет файлов"
+
+printf '{"problems": %s, "problem_list": [%s], "nginx": "%s", "certbot_timer": "%s", "cert_until": "%s", "cert_days_left": %s, "http_code": "%s", "redirect_code": "%s", "www_code": "%s", "size_bytes": %s, "response_ms": %s, "files": %s, "size_kb": %s, "last_deploy": "%s", "checked": "%s"}\n' \
+  "$problems" "$list" "$nginx_state" "$certbot_state" "$cert_until" "$cert_days" \
+  "$http_code" "$redirect_code" "$www_code" "$size_bytes" "$resp_ms" \
+  "$files" "$size_kb" "$last_deploy" "$(date '+%H:%M:%S')"

@@ -19,6 +19,7 @@ FILES=(
   "cam-archive/cam-archive-pause|/usr/local/sbin/cam-archive-pause|755"
   "cam-archive/vps-status|/usr/local/sbin/vps-status|755"
   "cam-archive/vps-control|/usr/local/sbin/vps-control|755"
+  "site/site-status|/usr/local/sbin/site-status|755"
   "systemd/cam-archive-watchdog.service|/etc/systemd/system/cam-archive-watchdog.service|644"
   "systemd/cam-archive-watchdog.timer|/etc/systemd/system/cam-archive-watchdog.timer|644"
   "cam-archive/cam_archive_web.py|/usr/local/lib/cam-archive-web/app.py|755"
