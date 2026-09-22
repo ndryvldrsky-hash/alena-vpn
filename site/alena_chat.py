@@ -26,6 +26,7 @@ venv /usr/local/lib/alena-chat/venv с пакетом anthropic).
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -188,6 +189,33 @@ def _stream_reply(sess, send):
     return "".join(text), final.usage, final.stop_reason
 
 
+DIALOGS = os.path.join(STATE, "dialogs")   # полный текст каждого законченного диалога (+ перевод), для вкладки «Чат на сайте»
+
+
+def needs_translation(text):
+    """Нужен ли перевод на русский: заметная доля не-кириллических букв."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    return sum(1 for c in letters if "\u0400" <= c <= "\u04ff") / len(letters) < 0.7
+
+
+def translate_ru(transcript):
+    """Перевод диалога на русский (решение пользователя 22.09: переведённый вариант нужен сразу — в письмо,
+    уведомление HA и на вкладку). Маркеры 👤/🤖 и разбиение на реплики сохраняются."""
+    try:
+        r = client.messages.create(
+            model=MODEL, max_tokens=4000, output_config={"effort": "low"},
+            system="Переведи диалог на русский язык, естественно и близко к смыслу. Сохрани построчно маркеры 👤 (посетитель) "
+                   "и 🤖 (Алёна) и разбиение на реплики; имена, адреса, телефоны, названия брендов и приложений не переводить. "
+                   "Верни только перевод, без пояснений.",
+            messages=[{"role": "user", "content": transcript[:12000]}],
+        )
+        return next(b.text for b in r.content if b.type == "text"), _cost(r.usage)
+    except Exception as e:
+        return f"(перевод не удался: {type(e).__name__})", 0.0
+
+
 SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -230,6 +258,19 @@ def _handoff(sess, reason):
         "summary": summ["summary"], "contact": summ["contact"], "intent": summ["intent"],
         "transcript": transcript[:3500], "cost_usd": round(sess["cost"] + summ["cost_usd"], 4),
     }
+    # перевод на русский, если диалог не по-русски — сразу, чтобы был в письме, уведомлении HA и на вкладке
+    ru, ru_cost = (translate_ru(transcript) if needs_translation(transcript) else (None, 0.0))
+    summ["cost_usd"] += ru_cost
+    payload["transcript_ru"] = ru[:3500] if ru else None
+    payload["cost_usd"] = round(sess["cost"] + summ["cost_usd"], 4)
+    # файл диалога для дашборда «май» (вкладка «Чат на сайте» → «Показать диалог»)
+    try:
+        os.makedirs(DIALOGS, exist_ok=True)
+        with open(os.path.join(DIALOGS, re.sub(r"[^A-Za-z0-9_.-]", "_", sess["id"])[:80] + ".json"), "w", encoding="utf-8") as f:
+            json.dump({**payload, "transcript": transcript, "transcript_ru": ru, "ended": datetime.now(TZ).strftime("%d.%m %H:%M")},
+                      f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        _log({"event": "dialog_save_error", "session": sess["id"], "error": repr(e)})
     ok = False
     if HA_WEBHOOK_URL:
         try:
@@ -245,7 +286,7 @@ def _handoff(sess, reason):
         if summ["cost_usd"]:
             _stats["today"]["cost_usd"] = round(_stats["today"].get("cost_usd", 0) + summ["cost_usd"], 5)
             _stats["total"]["cost_usd"] = round(_stats["total"].get("cost_usd", 0) + summ["cost_usd"], 5)
-        _stats["last"] = ([{"started": payload["started"], "lang": sess["lang"], "turns": payload["turns"],
+        _stats["last"] = ([{"session": sess["id"], "started": payload["started"], "lang": sess["lang"], "turns": payload["turns"],
                             "intent": summ["intent"], "summary": summ["summary"], "contact": summ["contact"],
                             "handoff": "ok" if ok else "ошибка"}] + _stats.get("last", []))[:10]
         _save_stats()

@@ -23,6 +23,7 @@ FILES=(
   "site/alena_chat.py|/usr/local/lib/alena-chat/app.py|644"
   "site/alena_chat_prompt.md|/usr/local/lib/alena-chat/prompt.md|644"
   "site/chat-status|/usr/local/sbin/chat-status|755"
+  "site/chat-dialog|/usr/local/sbin/chat-dialog|755"
   "site/nginx-kulagin.org.conf|/etc/nginx/sites-available/kulagin.org|644"
   "systemd/alena-chat.service|/etc/systemd/system/alena-chat.service|644"
   "secrets/alena-chat.env|/etc/alena-chat/env|600"

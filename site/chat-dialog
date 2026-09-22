@@ -1,0 +1,71 @@
+#!/usr/local/lib/alena-chat/venv/bin/python3
+"""chat-dialog — полный текст одного законченного диалога чата с Алёной (для вкладки «Чат на сайте» на «май»).
+
+    chat-dialog <session или хвост id>   → JSON: session, started, ended, lang, intent, summary, contact,
+                                             transcript, transcript_ru (перевод на русский, если диалог не по-русски), translated
+    chat-dialog --list                     → последние файлы диалогов
+
+Файлы пишет служба alena-chat в /var/lib/alena-chat/dialogs/<session>.json при закрытии диалога — вместе с переводом.
+Если перевода в файле нет (диалог закрыт до 22.09 вечера или перевод тогда не удался), делает его сейчас тем же
+ключом Anthropic из /etc/alena-chat/env и дописывает в файл, чтобы второй раз не платить.
+Вызывается по SSH из HA (/config/.local/bin/site_chat_dialog.py) по кнопке «Показать диалог».
+"""
+import glob
+import json
+import os
+import re
+import sys
+
+DIALOGS = "/var/lib/alena-chat/dialogs"
+ENV = "/etc/alena-chat/env"
+
+
+def load_env():
+    for line in open(ENV, encoding="utf-8"):
+        if "=" in line and not line.startswith("#"):
+            k, v = line.rstrip("\n").split("=", 1)
+            os.environ.setdefault(k, v)
+
+
+def find(key):
+    key = re.sub(r"[^A-Za-z0-9_.-]", "_", key)
+    exact = os.path.join(DIALOGS, key + ".json")
+    if os.path.exists(exact):
+        return exact
+    cands = [p for p in glob.glob(os.path.join(DIALOGS, "*.json")) if os.path.basename(p)[:-5].endswith(key)]
+    return max(cands, key=os.path.getmtime) if cands else None
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(json.dumps({"error": "нужен id диалога"}, ensure_ascii=False)); return
+    if sys.argv[1] == "--list":
+        files = sorted(glob.glob(os.path.join(DIALOGS, "*.json")), key=os.path.getmtime, reverse=True)[:20]
+        print(json.dumps([os.path.basename(f)[:-5] for f in files], ensure_ascii=False)); return
+    path = find(sys.argv[1])
+    if not path:
+        print(json.dumps({"error": "файл диалога не найден (диалог закрыт до включения сохранения или id неверный)", "session": sys.argv[1]},
+                         ensure_ascii=False)); return
+    d = json.load(open(path, encoding="utf-8"))
+    letters = [c for c in d.get("transcript", "") if c.isalpha()]
+    foreign = bool(letters) and sum(1 for c in letters if "Ѐ" <= c <= "ӿ") / len(letters) < 0.7
+    if foreign and not d.get("transcript_ru"):
+        load_env()
+        import anthropic
+        client = anthropic.Anthropic()
+        r = client.messages.create(
+            model="claude-opus-5", max_tokens=4000, output_config={"effort": "low"},
+            system="Переведи диалог на русский язык, естественно и близко к смыслу. Сохрани построчно маркеры 👤 (посетитель) "
+                   "и 🤖 (Алёна) и разбиение на реплики; имена, адреса, телефоны, названия брендов и приложений не переводить. "
+                   "Верни только перевод, без пояснений.",
+            messages=[{"role": "user", "content": d["transcript"][:12000]}])
+        d["transcript_ru"] = next(b.text for b in r.content if b.type == "text")
+        json.dump(d, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    d["translated"] = foreign
+    d.pop("error", None)
+    print(json.dumps({k: d.get(k) for k in ("session", "started", "ended", "lang", "intent", "summary", "contact",
+                                            "turns", "cost_usd", "transcript", "transcript_ru", "translated")}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
