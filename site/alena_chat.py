@@ -73,6 +73,12 @@ BUSY_TEXT = {
 
 client = anthropic.Anthropic()          # ключ — ANTHROPIC_API_KEY из /etc/alena-chat/env
 SYSTEM_PROMPT = open(PROMPT_FILE, encoding="utf-8").read()
+# Мост WhatsApp (wa_bridge.py в аддоне на Оптиплексе): заголовок X-Bridge-Token = BRIDGE_TOKEN из env даёт режим
+# channel=whatsapp — свой промпт (prompt_wa.md, помощь соседям с поиском квартиры), история приходит от моста целиком
+# (stateless), лимиты на IP не применяются; сессии моста в памяти не держатся и в handoff не попадают.
+BRIDGE_TOKEN = os.environ.get("BRIDGE_TOKEN", "")
+PROMPT_WA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_wa.md")
+PROMPT_WA = open(PROMPT_WA_FILE, encoding="utf-8").read() if os.path.exists(PROMPT_WA_FILE) else SYSTEM_PROMPT
 IP_SALT = secrets.token_hex(8)          # соль на время жизни процесса: хеши IP не сопоставимы между рестартами
 
 _lock = threading.Lock()
@@ -159,8 +165,14 @@ def _allowed(iph):
 
 
 # ---------- Claude ----------
-def _system(lang):
-    """Первый блок — постоянный (кешируется на час), второй — язык беседы, меняется от сессии к сессии."""
+def _system(lang, channel="site", note=""):
+    """Первый блок — постоянный (кешируется на час), второй — язык беседы и контекст, меняется от сессии к сессии."""
+    if channel == "whatsapp":
+        return [
+            {"type": "text", "text": PROMPT_WA, "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            {"type": "text", "text": f"Собеседник: {note or 'сосед из группы'}. Язык по умолчанию: {LANG_NAMES.get(lang, 'иврит')}; "
+                                     "отвечай на языке, на котором пишет собеседник."},
+        ]
     return [
         {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral", "ttl": "1h"}},
         {"type": "text", "text": f"Язык интерфейса сайта у этого посетителя: {LANG_NAMES.get(lang, 'русский')}. "
@@ -175,7 +187,7 @@ def _stream_reply(sess, send):
     with client.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=_system(sess["lang"]),
+        system=_system(sess["lang"], sess.get("channel", "site"), sess.get("note", "")),
         messages=sess["messages"],
         output_config={"effort": EFFORT},
         # серверный запасной маршрут на случай отказа по политике — ответ придёт от другой модели вместо тишины
@@ -207,8 +219,8 @@ def translate_ru(transcript):
         r = client.messages.create(
             model=MODEL, max_tokens=4000, output_config={"effort": "low"},
             system="Переведи диалог на русский язык, естественно и близко к смыслу. Сохрани построчно маркеры 👤 (посетитель) "
-                   "и 🤖 (Алёна) и разбиение на реплики; имена, адреса, телефоны, названия брендов и приложений не переводить. "
-                   "Верни только перевод, без пояснений.",
+                   "и 🤖 (Алёна) и разбиение на реплики; имена, адреса, телефоны, названия брендов и приложений не переводить; "
+                   "имя ассистентки по-русски всегда «Алёна» (через ё). Верни только перевод, без пояснений.",
             messages=[{"role": "user", "content": transcript[:12000]}],
         )
         return next(b.text for b in r.content if b.type == "text"), _cost(r.usage)
@@ -234,7 +246,7 @@ def _summarize(sess):
         r = client.messages.create(
             model=MODEL, max_tokens=600, output_config={"effort": "low", "format": {"type": "json_schema", "schema": SUMMARY_SCHEMA}},
             system="Ты составляешь для Андрея (владельца kulagin.org) сводку диалога посетителя сайта с его ИИ-ассистенткой Алёной. "
-                   "По-русски, коротко, по делу. Контакт — только если посетитель его реально написал.",
+                   "По-русски, коротко, по делу; имя ассистентки — «Алёна», через ё. Контакт — только если посетитель его реально написал.",
             messages=[{"role": "user", "content": transcript[:12000]}],
         )
         txt = next(b.text for b in r.content if b.type == "text")
@@ -343,6 +355,54 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "sessions": n})
         self._json(404, {"error": "not found"})
 
+    def _bridge_turn(self, sid, lang, msg, data):
+        """Ход WhatsApp-диалога от моста: история приходит целиком, ответ — одним JSON (без SSE)."""
+        history = []
+        for m in (data.get("history") or [])[-40:]:
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"].strip():
+                if not history or history[-1]["role"] != m["role"]:
+                    history.append({"role": m["role"], "content": m["content"].strip()[:MAX_MSG_CHARS * 2]})
+        while history and history[0]["role"] != "user":
+            history.pop(0)
+        if history and history[-1]["role"] == "user":
+            history.pop()
+        sess = {"id": sid, "lang": lang, "channel": "whatsapp", "note": str(data.get("note", ""))[:300],
+                "messages": history + [{"role": "user", "content": msg}]}
+        try:
+            text, usage, stop = _stream_reply(sess, lambda chunk: None)
+            cost = _cost(usage)
+            if stop == "refusal":
+                text = REFUSAL_TEXT.get(lang, REFUSAL_TEXT["ru"])
+                _count("refusals")
+            _count("messages", cost)
+            _log({"event": "wa_turn", "session": sid, "lang": lang, "user": msg, "assistant": text, "stop": stop,
+                  "usage": {"in": usage.input_tokens, "out": usage.output_tokens,
+                            "cache_read": usage.cache_read_input_tokens or 0, "cache_write": usage.cache_creation_input_tokens or 0},
+                  "cost_usd": round(cost, 5)})
+            self._json(200, {"reply": text, "cost_usd": round(cost, 5)})
+        except Exception as e:
+            _count("errors")
+            _log({"event": "error", "session": sid, "error": repr(e)})
+            self._json(502, {"error": repr(e)[:200]})
+
+    def _bridge_translate(self, data):
+        """Перевод текста на русский для дашборда (мост WhatsApp): дешёвый вызов, без истории."""
+        text = str(data.get("text", ""))[:6000]
+        if not text.strip():
+            return self._json(400, {"error": "empty"})
+        try:
+            r = client.messages.create(
+                model=MODEL, max_tokens=2000, output_config={"effort": "low"},
+                system="Переведи на русский язык естественно и близко к смыслу; имена, телефоны, названия не переводить; "
+                       "имя ассистентки по-русски всегда «Алёна» (через ё). Верни только перевод.",
+                messages=[{"role": "user", "content": text}])
+            out = next(b.text for b in r.content if b.type == "text")
+            cost = _cost(r.usage)
+            _count("messages", cost)
+            self._json(200, {"text": out, "cost_usd": round(cost, 5)})
+        except Exception as e:
+            self._json(502, {"error": repr(e)[:200]})
+
     def do_POST(self):
         try:
             data = self._body()
@@ -355,6 +415,10 @@ class Handler(BaseHTTPRequestHandler):
             if s:
                 _handoff(s, "closed")
             return
+        if self.path == "/api/chat/translate":
+            if not (BRIDGE_TOKEN and self.headers.get("X-Bridge-Token") == BRIDGE_TOKEN):
+                return self._json(403, {"error": "forbidden"})
+            return self._bridge_translate(data)
         if self.path != "/api/chat":
             return self._json(404, {"error": "not found"})
 
@@ -366,6 +430,9 @@ class Handler(BaseHTTPRequestHandler):
         if lang not in LANG_NAMES:
             lang = "ru"
         msg = msg[:MAX_MSG_CHARS]
+        bridge = bool(BRIDGE_TOKEN) and self.headers.get("X-Bridge-Token") == BRIDGE_TOKEN
+        if bridge and data.get("channel") == "whatsapp":
+            return self._bridge_turn(sid, lang, msg, data)
         iph = _ip_hash(self._ip())
         if not _allowed(iph):
             return self._json(429, {"error": BUSY_TEXT[lang]})
