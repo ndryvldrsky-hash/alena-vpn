@@ -1,0 +1,17 @@
+[Unit]
+Description=Чат с Алёной на kulagin.org (127.0.0.1:8090, наружу — nginx /api/chat)
+After=network-online.target
+
+[Service]
+User=alenachat
+EnvironmentFile=/etc/alena-chat/env
+StateDirectory=alena-chat
+ExecStart=/usr/local/lib/alena-chat/venv/bin/python3 /usr/local/lib/alena-chat/app.py
+Restart=always
+RestartSec=5
+Nice=5
+# у сервера 512 МБ на всё; SDK + процесс ~60 МБ, потолок с запасом
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Выкладка конфигурации VPS alena-vpn (DigitalOcean lon1, 167.99.95.129) из этого репозитория. 2026-09-17.
-#   /config/alena-vpn/deploy.sh deploy  — архив камер и веб-плеер: скрипты, юниты systemd, rtsp.env; daemon-reload и перезапуск
-#                                         только тех служб, чьи файлы изменились
+#   /config/alena-vpn/deploy.sh deploy  — архив камер, веб-плеер, чат с Алёной и nginx сайта: скрипты, юниты systemd, env-файлы;
+#                                         daemon-reload и перезапуск только тех служб, чьи файлы изменились
 #   /config/alena-vpn/deploy.sh pull    — забрать текущие файлы с VPS в репозиторий (перед коммитом, если правили на сервере)
 #   /config/alena-vpn/deploy.sh status  — службы, запись архива, туннель, Tailscale
 # НЕ применяет nftables.conf, wireguard/ и sysctl/: через VPS идёт интернет всего дома, ошибка там = дом без сети.
@@ -20,6 +20,12 @@ FILES=(
   "cam-archive/vps-status|/usr/local/sbin/vps-status|755"
   "cam-archive/vps-control|/usr/local/sbin/vps-control|755"
   "site/site-status|/usr/local/sbin/site-status|755"
+  "site/alena_chat.py|/usr/local/lib/alena-chat/app.py|644"
+  "site/alena_chat_prompt.md|/usr/local/lib/alena-chat/prompt.md|644"
+  "site/chat-status|/usr/local/sbin/chat-status|755"
+  "site/nginx-kulagin.org.conf|/etc/nginx/sites-available/kulagin.org|644"
+  "systemd/alena-chat.service|/etc/systemd/system/alena-chat.service|644"
+  "secrets/alena-chat.env|/etc/alena-chat/env|600"
   "systemd/cam-archive-watchdog.service|/etc/systemd/system/cam-archive-watchdog.service|644"
   "systemd/cam-archive-watchdog.timer|/etc/systemd/system/cam-archive-watchdog.timer|644"
   "cam-archive/cam_archive_web.py|/usr/local/lib/cam-archive-web/app.py|755"
@@ -61,6 +67,10 @@ deploy)
   [[ "$s" == *cam-archive-clean* ]] && $SSH "systemctl restart cam-archive-clean.timer" && echo "перезапущен таймер очистки"
   [[ "$s" == *cam-archive-watchdog* ]] && $SSH "systemctl enable --now cam-archive-watchdog.timer >/dev/null 2>&1; systemctl restart cam-archive-watchdog.timer" && echo "перезапущен сторож записи"
   [[ "$s" == *iperf3-wg* ]] && $SSH "systemctl restart iperf3-wg" && echo "перезапущен iperf3"
+  # чат с Алёной: код, промпт, окружение или юнит — перезапуск службы (открытые диалоги в памяти теряются, лог остаётся)
+  [[ "$s" == *alena-chat* ]] && $SSH "systemctl enable --now alena-chat >/dev/null 2>&1; systemctl restart alena-chat" && echo "перезапущен чат с Алёной"
+  # конфиг nginx сайта — проверка и мягкая перезагрузка, ошибочный конфиг не применится
+  [[ "$s" == */etc/nginx/sites-available/kulagin.org* ]] && $SSH "nginx -t && systemctl reload nginx" && echo "перезагружен nginx"
   ;;
 pull)
   for e in "${FILES[@]}" "${PULL_ONLY[@]}"; do
@@ -70,7 +80,7 @@ pull)
   done
   ;;
 status)
-  $SSH 'echo "== службы"; for u in wg-quick@wg0 nftables tailscaled cam-archive-web cam-archive-clean.timer iperf3-wg $(systemctl list-units --plain --no-legend "cam-archive@*" | awk "{print \$1}"); do printf "  %-28s %s\n" "$u" "$(systemctl is-active $u)"; done
+  $SSH 'echo "== службы"; for u in wg-quick@wg0 nftables tailscaled cam-archive-web cam-archive-clean.timer iperf3-wg alena-chat nginx $(systemctl list-units --plain --no-legend "cam-archive@*" | awk "{print \$1}"); do printf "  %-28s %s\n" "$u" "$(systemctl is-active $u)"; done
     echo "== архив"; /usr/local/sbin/cam-archive-status
     echo "== туннель"; wg show wg0 latest-handshakes | awk "{print \"  рукопожатие \" systime()-\$2 \" с назад\"}"
     echo "== Tailscale"; tailscale serve status 2>/dev/null | sed "s/^/  /"

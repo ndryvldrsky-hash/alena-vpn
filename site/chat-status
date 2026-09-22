@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+# chat-status — состояние чата с Алёной на kulagin.org (служба alena-chat) для command_line-сенсора
+# Home Assistant (sensor.chat_na_saite, файл /config/command_line/site_chat.yaml, вкладка «Чат на сайте»).
+# Читает /var/lib/alena-chat/stats.json, который ведёт сама служба, плюс systemctl и /api/chat/health.
+# Состояние сенсора = число проблем (0 = всё хорошо), подробности — в атрибутах.
+import json, subprocess, urllib.request
+from datetime import datetime
+
+STATS = "/var/lib/alena-chat/stats.json"
+
+
+def active(unit):
+    try:
+        return subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return "?"
+
+
+try:
+    st = json.load(open(STATS, encoding="utf-8"))
+except Exception:
+    st = {"today": {}, "total": {}, "last": []}
+
+service = active("alena-chat")
+try:
+    health = json.load(urllib.request.urlopen("http://127.0.0.1:8090/api/chat/health", timeout=5))
+    sessions_open = health.get("sessions", 0)
+except Exception:
+    health = None
+    sessions_open = None
+
+today, total = st.get("today", {}), st.get("total", {})
+problems = []
+if service != "active":
+    problems.append(f"служба alena-chat: {service}")
+if health is None:
+    problems.append("служба не отвечает на /api/chat/health")
+if today.get("errors", 0) >= 3:
+    problems.append(f"ошибок за сегодня: {today['errors']}")
+bad = [x for x in st.get("last", []) if x.get("handoff") != "ok"]
+if bad:
+    problems.append(f"не доставлено в HA: {len(bad)} из последних {len(st.get('last', []))}")
+
+print(json.dumps({
+    "problems": len(problems), "problem_list": problems, "service": service, "sessions_open": sessions_open,
+    "today_date": today.get("date", ""), "today_messages": today.get("messages", 0), "today_sessions": today.get("sessions", 0),
+    "today_cost_usd": round(today.get("cost_usd", 0), 3), "today_refusals": today.get("refusals", 0), "today_errors": today.get("errors", 0),
+    "total_messages": total.get("messages", 0), "total_sessions": total.get("sessions", 0), "total_cost_usd": round(total.get("cost_usd", 0), 2),
+    "last": st.get("last", [])[:10], "stats_updated": st.get("updated", ""),
+    "checked": datetime.now().strftime("%H:%M:%S"),
+}, ensure_ascii=False))

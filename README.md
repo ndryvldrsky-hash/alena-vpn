@@ -24,6 +24,18 @@
    `127.0.0.1:8080`, служба `cam-archive-web`). Таймлайн по камерам, события Frigate с миниатюрами, перекодирование
    выбранной минуты в H.264 по запросу, скорость до 8×.
 
+5. **Чат с Алёной на kulagin.org** (с 22.09.2026) — служба `alena-chat` (`127.0.0.1:8090`, наружу через `location /api/chat`
+   в nginx-конфиге сайта, поток SSE). Отдельный экземпляр Алёны на Claude API (`claude-opus-5`, ключ Anthropic в
+   `/etc/alena-chat/env`), без инструментов и доступа в дом: объясняет посетителям суть идеи по `prompt.md` и собирает
+   контакт. Историю диалога держит в памяти по id сессии; законченный диалог (посетитель ушёл или молчит 15 мин)
+   сводится Claude в 2–3 предложения по-русски и уходит вебхуком в HA (`automations.yaml` → `site_chat_handoff`: push на
+   телефоны, постоянное уведомление с полным текстом, письмо). Лимиты: 30 реплик/ч и 80/сутки на IP, 400/сутки всего,
+   1500 символов на реплику. Учёт — `/var/lib/alena-chat/log/<дата>.jsonl` и `stats.json` (`chat-status` → сенсор HA
+   `sensor.chat_na_saite`, вкладка «Чат на сайте»). Зависимости — venv `/usr/local/lib/alena-chat/venv` (`pip install
+   anthropic`, при восстановлении с нуля — `apt install python3-venv`). Память: у дроплета 512 МБ, SDK ≈ 55 МБ RSS, поэтому
+   22.09 добавлен `/swapfile` на 1 ГБ (`vm.swappiness=10`, `/etc/sysctl.d/91-swap.conf`); у службы `MemoryMax=200M`.
+   Виджет чата — в `index.html` сайта (`/config/kulagin_site`, выкладка `vps_site_deploy`), на пяти языках.
+
 ## Файлы
 
 | В репозитории | На сервере |
@@ -34,6 +46,12 @@
 | `cam-archive/vps-status` | `/usr/local/sbin/vps-status` (JSON о самом сервере для датчика HA `sensor.vps_alena_vpn`, вкладка «VPS») |
 | `cam-archive/vps-control` | `/usr/local/sbin/vps-control` (restart_web/restart_archive/restart_tailscale/reboot — кнопки вкладки «VPS») |
 | `cam-archive/cam_archive_web.py` | `/usr/local/lib/cam-archive-web/app.py` |
+| `site/site-status` | `/usr/local/sbin/site-status` (JSON о сайте для `sensor.sait_kulagin_org`, вкладка «Сайт») |
+| `site/alena_chat.py` | `/usr/local/lib/alena-chat/app.py` — служба `alena-chat`, чат с Алёной |
+| `site/alena_chat_prompt.md` | `/usr/local/lib/alena-chat/prompt.md` — кто такая Алёна и суть идеи (system prompt, кешируется на час) |
+| `site/chat-status` | `/usr/local/sbin/chat-status` (JSON для `sensor.chat_na_saite`, вкладка «Чат на сайте») |
+| `site/nginx-kulagin.org.conf` | `/etc/nginx/sites-available/kulagin.org` — сайт + `location /api/chat`; certbot дописывает сюда же, после его правок — `deploy.sh pull` |
+| `secrets/alena-chat.env` 🔒 | `/etc/alena-chat/env` — ключ Anthropic и адрес вебхука HA (id вебхука — в `automations.yaml`) |
 | `systemd/*` | `/etc/systemd/system/` |
 | `secrets/rtsp.env` 🔒 | `/etc/cam-archive/rtsp.env` — логин и пароль go2rtc Frigate |
 | `wireguard/wg0.conf`, `server.key` 🔒 | `/etc/wireguard/` |
@@ -59,8 +77,10 @@ tailscaled; после неё перезапустить `tailscaled`.
 
 1. Дроплет Debian 13 в DigitalOcean, SSH-ключ `alena-ha` (`/config/.ssh/do_vpn`), адрес — в `/config/.ssh/config` (хост `do-vpn`).
 2. `apt install wireguard-tools nftables iperf3 ffmpeg python3`; Tailscale — `curl -fsSL https://tailscale.com/install.sh | sh`.
-3. Разблокировать репозиторий, разложить файлы по таблице выше, `useradd --system --home /var/lib/cam-archive --shell /usr/sbin/nologin camarchive`.
-4. `systemctl enable --now wg-quick@wg0 nftables iperf3-wg cam-archive-web cam-archive-clean.timer cam-archive-watchdog.timer cam-archive@xm530 cam-archive@x2_wq_bl cam-archive@tambur cam-archive@axis_2100 cam-archive@imac cam-archive@xps`.
+3. Разблокировать репозиторий, разложить файлы по таблице выше, `useradd --system --home /var/lib/cam-archive --shell /usr/sbin/nologin camarchive`;
+   для чата — `useradd --system --home /var/lib/alena-chat --shell /usr/sbin/nologin alenachat`, `apt install python3-venv nginx certbot python3-certbot-nginx`,
+   `python3 -m venv /usr/local/lib/alena-chat/venv && /usr/local/lib/alena-chat/venv/bin/pip install anthropic`, `mkdir -p /etc/alena-chat /var/www/kulagin.org`.
+4. `systemctl enable --now wg-quick@wg0 nftables iperf3-wg cam-archive-web cam-archive-clean.timer cam-archive-watchdog.timer cam-archive@xm530 cam-archive@x2_wq_bl cam-archive@tambur cam-archive@axis_2100 cam-archive@imac cam-archive@xps alena-chat nginx`.
 5. `tailscale up --hostname=alena-vpn --accept-dns=false --accept-routes=false` (подтвердить вход по ссылке),
    `tailscale serve --bg --https=443 http://127.0.0.1:8080`.
 6. Если сменился IP — поправить Endpoint в `/etc/wireguard/wg-vps.conf` на Коине и `/config/.ssh/config`.

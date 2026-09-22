@@ -5,7 +5,7 @@
 import json, os, shutil, subprocess, time
 
 SERVICES = ["wg-quick@wg0", "nftables", "tailscaled", "cam-archive-web", "cam-archive-clean.timer",
-            "cam-archive-watchdog.timer", "iperf3-wg"]
+            "cam-archive-watchdog.timer", "iperf3-wg", "nginx", "alena-chat"]
 PEERS = {"10.77.0.2/32": "Коин wg-vps", "10.77.0.3/32": "Коин wg-vps2"}
 
 
