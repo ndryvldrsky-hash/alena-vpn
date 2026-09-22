@@ -36,6 +36,33 @@ def find(key):
     return max(cands, key=os.path.getmtime) if cands else None
 
 
+def from_log(key):
+    """Собрать диалог из журнала /var/lib/alena-chat/log/*.jsonl: реплики (event=turn) + сводка (event=handoff)."""
+    key = re.sub(r"[^A-Za-z0-9_.-]", "_", key)
+    turns, hand = [], None
+    for lf in sorted(glob.glob("/var/lib/alena-chat/log/*.jsonl")):
+        for line in open(lf, encoding="utf-8"):
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            sid = str(e.get("session", ""))
+            if not (sid == key or sid.endswith(key)):
+                continue
+            if e.get("event") == "turn":
+                turns.append(e)
+            elif e.get("event") == "handoff":
+                hand = e
+    if not turns:
+        return None
+    transcript = "\n".join(f"👤 {t['user']}\n🤖 {t['assistant']}" for t in turns)
+    return {"session": turns[0]["session"], "started": (hand or {}).get("started") or turns[0]["ts"][5:16].replace("T", " "),
+            "ended": turns[-1]["ts"][5:16].replace("T", " "), "lang": turns[0].get("lang", "ru"), "intent": (hand or {}).get("intent", "вопрос"),
+            "summary": (hand or {}).get("summary", "(сводки не было)"), "contact": (hand or {}).get("contact", ""),
+            "turns": len(turns), "cost_usd": round(sum(t.get("cost_usd", 0) for t in turns), 4),
+            "transcript": transcript, "transcript_ru": None, "restored": "из журнала"}
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"error": "нужен id диалога"}, ensure_ascii=False)); return
@@ -44,8 +71,13 @@ def main():
         print(json.dumps([os.path.basename(f)[:-5] for f in files], ensure_ascii=False)); return
     path = find(sys.argv[1])
     if not path:
-        print(json.dumps({"error": "файл диалога не найден (диалог закрыт до включения сохранения или id неверный)", "session": sys.argv[1]},
-                         ensure_ascii=False)); return
+        d = from_log(sys.argv[1])      # диалог закрыт до того, как файлы стали сохраняться (22.09 ~20:00) — собрать из журнала
+        if not d:
+            print(json.dumps({"error": "диалог не найден ни в файлах, ни в журнале (id неверный?)", "session": sys.argv[1]},
+                             ensure_ascii=False)); return
+        os.makedirs(DIALOGS, exist_ok=True)
+        path = os.path.join(DIALOGS, re.sub(r"[^A-Za-z0-9_.-]", "_", d["session"])[:80] + ".json")
+        json.dump(d, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     d = json.load(open(path, encoding="utf-8"))
     letters = [c for c in d.get("transcript", "") if c.isalpha()]
     foreign = bool(letters) and sum(1 for c in letters if "Ѐ" <= c <= "ӿ") / len(letters) < 0.7

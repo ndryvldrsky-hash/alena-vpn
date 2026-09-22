@@ -300,7 +300,7 @@ def _handoff(sess, reason):
             _stats["total"]["cost_usd"] = round(_stats["total"].get("cost_usd", 0) + summ["cost_usd"], 5)
         _stats["last"] = ([{"session": sess["id"], "started": payload["started"], "lang": sess["lang"], "turns": payload["turns"],
                             "intent": summ["intent"], "summary": summ["summary"], "contact": summ["contact"],
-                            "handoff": "ok" if ok else "ошибка"}] + _stats.get("last", []))[:10]
+                            "handoff": "ok" if ok else "ошибка"}] + _stats.get("last", []))[:30]
         _save_stats()
 
 
@@ -386,15 +386,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(502, {"error": repr(e)[:200]})
 
     def _bridge_translate(self, data):
-        """Перевод текста на русский для дашборда (мост WhatsApp): дешёвый вызов, без истории."""
+        """Перевод для моста WhatsApp: по умолчанию на русский (лента дашборда); to=he/en/… — на язык собеседника
+        (сообщение хозяина с дашборда). Дешёвый вызов, без истории."""
         text = str(data.get("text", ""))[:6000]
+        to = str(data.get("to", "ru"))[:2]
         if not text.strip():
             return self._json(400, {"error": "empty"})
+        target = {"ru": "русский", "he": "иврит", "en": "английский", "ar": "арабский", "fr": "французский"}.get(to, "русский")
         try:
             r = client.messages.create(
                 model=MODEL, max_tokens=2000, output_config={"effort": "low"},
-                system="Переведи на русский язык естественно и близко к смыслу; имена, телефоны, названия не переводить; "
-                       "имя ассистентки по-русски всегда «Алёна» (через ё). Верни только перевод.",
+                system=f"Переведи на {target} язык естественно и близко к смыслу, разговорным стилем переписки; имена, телефоны, "
+                       "названия не переводить; имя ассистентки по-русски всегда «Алёна» (через ё), на иврите אליונה. Верни только перевод.",
                 messages=[{"role": "user", "content": text}])
             out = next(b.text for b in r.content if b.type == "text")
             cost = _cost(r.usage)
