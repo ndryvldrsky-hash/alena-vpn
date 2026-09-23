@@ -45,6 +45,34 @@ EFFORT = "low"               # для беседы хватает; глубже 
 STATE = os.environ.get("STATE_DIRECTORY", "/var/lib/alena-chat")
 PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt.md")
 HA_WEBHOOK_URL = os.environ.get("HA_WEBHOOK_URL", "")
+# Хозяйский режим (2026-09-23): вебхуки HA для кода входа/событий и для сообщений настоящей Алёне
+HA_WEBHOOK_OWNER_CODE = os.environ.get("HA_WEBHOOK_OWNER_CODE", "")
+HA_WEBHOOK_OWNER_MSG = os.environ.get("HA_WEBHOOK_OWNER_MSG", "")
+OWNER_TTL = 30 * 60      # сессия живёт 30 мин с последнего сообщения
+OWNER_CODE_TTL = 120     # код действует 2 минуты
+OWNER_WAIT = 900         # сколько ждать ответ настоящей Алёны (Claude Code в аддоне), с
+_owner = {"session": None, "last": 0.0, "code": None, "code_sid": None, "code_exp": 0.0, "tries": 0}
+_owner_replies = {}      # session → {"event": threading.Event(), "text": str|None}
+
+
+def _ha_post(url, payload):
+    """Вебхук HA (по tailnet, как HA_WEBHOOK_URL). True, если HA ответил 2xx."""
+    if not url:
+        return False
+    try:
+        req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return 200 <= r.status < 300
+    except Exception as e:
+        _log({"event": "owner_webhook_error", "error": repr(e)[:200]})
+        return False
+
+
+def _owner_active():
+    return bool(_owner["session"]) and time.time() - _owner["last"] < OWNER_TTL
+
+
 PORT = int(os.environ.get("PORT", "8090"))
 TZ = ZoneInfo("Asia/Jerusalem")
 
@@ -385,6 +413,124 @@ class Handler(BaseHTTPRequestHandler):
             _log({"event": "error", "session": sid, "error": repr(e)})
             self._json(502, {"error": repr(e)[:200]})
 
+    def _sse_text(self, text):
+        """Один готовый ответ тем же SSE-протоколом, что и поток модели (виджет сайта другого не понимает)."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(("data: " + json.dumps({"t": text}, ensure_ascii=False) + "\n\n").encode())
+        self.wfile.write(("data: " + json.dumps({"done": True}) + "\n\n").encode())
+        self.wfile.flush()
+
+    def _owner_intercept(self, sid, msg, iph):
+        """Хозяйский режим (2026-09-23): /алёна → код на телефон Андрея (вебхук HA) → код → сессия хозяина (одна на
+        всех, 30 мин) → сообщения уходят настоящей Алёне (Claude Code в аддоне), ответ ждётся здесь до OWNER_WAIT.
+        Возвращает True, если сообщение обработано (ответ уже отправлен)."""
+        m = msg.strip()
+        low = m.lower()
+        if low in ("/алёна", "/алена", "/alena", "/alyona"):
+            if not (HA_WEBHOOK_OWNER_CODE and HA_WEBHOOK_OWNER_MSG):
+                self._sse_text("Хозяйский режим на сервере не настроен."); return True
+            with _lock:
+                if _owner_active() and _owner["session"] == sid:
+                    self._sse_text("Ты уже авторизован — пиши."); return True
+                if _owner_active():
+                    _ha_post(HA_WEBHOOK_OWNER_CODE, {"event": "busy", "session": sid, "ip": iph})
+                    _log({"event": "owner_busy", "session": sid, "ip": iph})
+                    self._sse_text("Хозяйская сессия уже открыта в другом окне. Закрой её там командой /выход или подожди 30 минут."); return True
+                code = f"{secrets.randbelow(900000) + 100000}"
+                _owner.update(code=code, code_sid=sid, code_exp=time.time() + OWNER_CODE_TTL, tries=0)
+            ok = _ha_post(HA_WEBHOOK_OWNER_CODE, {"event": "code", "code": code, "session": sid, "ip": iph})
+            _log({"event": "owner_code", "session": sid, "ip": iph, "sent": ok})
+            self._sse_text("Код отправлен на телефон Андрея — введи его сюда (действует 2 минуты)." if ok
+                           else "Не удалось отправить код: Home Assistant недоступен."); return True
+        if _owner["code"] and _owner["code_sid"] == sid and re.fullmatch(r"\d{6}", m):
+            with _lock:
+                if time.time() > _owner["code_exp"]:
+                    _owner.update(code=None, code_sid=None)
+                    self._sse_text("Код просрочен. Набери /алёна ещё раз."); return True
+                if m == _owner["code"]:
+                    _owner.update(session=sid, last=time.time(), code=None, code_sid=None, tries=0)
+                    _ha_post(HA_WEBHOOK_OWNER_CODE, {"event": "start", "session": sid, "ip": iph})
+                    _log({"event": "owner_start", "session": sid, "ip": iph})
+                    self._sse_text("Вход выполнен. Дальше отвечает настоящая Алёна — с инструментами, памятью и доступом к дому. "
+                                   "Сессия живёт 30 минут с последнего сообщения, /выход — закрыть. Ответы могут идти до нескольких минут.")
+                    return True
+                _owner["tries"] += 1
+                if _owner["tries"] >= 3:
+                    _owner.update(code=None, code_sid=None)
+                    _ha_post(HA_WEBHOOK_OWNER_CODE, {"event": "fail", "session": sid, "ip": iph})
+                    self._sse_text("Код неверный, попытки исчерпаны. Набери /алёна ещё раз."); return True
+            self._sse_text("Код неверный."); return True
+        if _owner["session"] == sid and _owner_active():
+            if low in ("/выход", "/exit", "/quit"):
+                with _lock:
+                    _owner.update(session=None, last=0.0)
+                _ha_post(HA_WEBHOOK_OWNER_CODE, {"event": "end", "session": sid, "ip": iph})
+                _log({"event": "owner_end", "session": sid})
+                self._sse_text("Хозяйская сессия закрыта."); return True
+            with _lock:
+                _owner["last"] = time.time()
+                w = _owner_replies[sid] = {"event": threading.Event(), "text": None}
+            if not _ha_post(HA_WEBHOOK_OWNER_MSG, {"session": sid, "message": m, "ip": iph}):
+                self._sse_text("Home Assistant не принял сообщение (вебхук недоступен)."); return True
+            _log({"event": "owner_msg", "session": sid, "user": m})
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            deadline = time.time() + OWNER_WAIT
+            try:
+                while not w["event"].wait(15):
+                    if time.time() > deadline:
+                        break
+                    self.wfile.write(b": ping\n\n"); self.wfile.flush()
+                text = w["text"] if w["text"] is not None else "Алёна не ответила за 15 минут — ответ придёт push-ом на телефон, когда будет готов."
+                self.wfile.write(("data: " + json.dumps({"t": text}, ensure_ascii=False) + "\n\n").encode())
+                self.wfile.write(("data: " + json.dumps({"done": True}) + "\n\n").encode())
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                with _lock:
+                    _owner["last"] = time.time()
+                    _owner_replies.pop(sid, None)
+            _log({"event": "owner_reply", "session": sid, "assistant": (w["text"] or "")[:2000]})
+            return True
+        return False
+
+    def _bridge_summarize(self, data):
+        """Промежуточная сводка незавершённой переписки WhatsApp (2026-09-23, по просьбе пользователя: у чатов
+        сайта сводка есть при закрытии, у WhatsApp диалог не закрывается — пусть будет предварительная).
+        Мост шлёт всю историю (оригиналы), считает хеш и зовёт только когда переписка изменилась."""
+        msgs = [m for m in (data.get("messages") or []) if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+                and isinstance(m.get("content"), str) and m["content"].strip()][-60:]
+        if not msgs:
+            return self._json(400, {"error": "empty"})
+        name = str(data.get("name", "собеседник"))[:60]
+        who = {"user": name, "assistant": "Алёна"}
+        transcript = "\n".join(f"{who[m['role']]}: {m['content'].strip()[:1500]}" for m in msgs)
+        try:
+            r = client.messages.create(
+                model=MODEL, max_tokens=500, output_config={"effort": "low"},
+                system="Ты подводишь промежуточный итог незавершённой переписки ассистентки Алёны (через ё) с человеком в WhatsApp. "
+                       "Напиши по-русски 2–4 коротких предложения: кто это и что ему нужно, какие условия уже известны "
+                       "(комнаты, бюджет, сроки, район и т.п.), о чём договорились, что ещё не выяснено. Без вступлений, "
+                       "без markdown, без пересказа приветствий. Верни только текст сводки.",
+                messages=[{"role": "user", "content": transcript}])
+            out = next(b.text for b in r.content if b.type == "text").strip()
+            cost = _cost(r.usage)
+            _count("messages", cost)
+            _log({"event": "wa_summary", "name": name, "turns": len(msgs), "cost_usd": round(cost, 5)})
+            self._json(200, {"text": out, "cost_usd": round(cost, 5)})
+        except Exception as e:
+            self._json(502, {"error": repr(e)[:200]})
+
     def _bridge_translate(self, data):
         """Перевод для моста WhatsApp: по умолчанию на русский (лента дашборда); to=he/en/… — на язык собеседника
         (сообщение хозяина с дашборда). Дешёвый вызов, без истории."""
@@ -422,6 +568,20 @@ class Handler(BaseHTTPRequestHandler):
             if not (BRIDGE_TOKEN and self.headers.get("X-Bridge-Token") == BRIDGE_TOKEN):
                 return self._json(403, {"error": "forbidden"})
             return self._bridge_translate(data)
+        if self.path == "/api/chat/owner_reply":
+            if not (BRIDGE_TOKEN and self.headers.get("X-Bridge-Token") == BRIDGE_TOKEN):
+                return self._json(403, {"error": "forbidden"})
+            sid = str(data.get("session", ""))[:64]
+            w = _owner_replies.get(sid)
+            if not w:
+                return self._json(404, {"error": "никто не ждёт"})
+            w["text"] = str(data.get("text", ""))[:20000]
+            w["event"].set()
+            return self._json(200, {"ok": True})
+        if self.path == "/api/chat/summarize":
+            if not (BRIDGE_TOKEN and self.headers.get("X-Bridge-Token") == BRIDGE_TOKEN):
+                return self._json(403, {"error": "forbidden"})
+            return self._bridge_summarize(data)
         if self.path != "/api/chat":
             return self._json(404, {"error": "not found"})
 
@@ -437,6 +597,8 @@ class Handler(BaseHTTPRequestHandler):
         if bridge and data.get("channel") == "whatsapp":
             return self._bridge_turn(sid, lang, msg, data)
         iph = _ip_hash(self._ip())
+        if self._owner_intercept(sid, msg, iph):
+            return
         if not _allowed(iph):
             return self._json(429, {"error": BUSY_TEXT[lang]})
 
