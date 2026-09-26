@@ -29,6 +29,9 @@ FILES=(
   "site/nginx-v.kulagin.org.conf|/etc/nginx/sites-available/v.kulagin.org|644"
   "site/volunteer_book.py|/usr/local/lib/volunteer-book/app.py|644"
   "site/volunteer-admin|/usr/local/sbin/volunteer-admin|755"
+  "site/flyer_bot.py|/usr/local/lib/flyer-bot/app.py|644"
+  "systemd/flyer-bot.service|/etc/systemd/system/flyer-bot.service|644"
+  "secrets/flyer-bot.env|/etc/flyer-bot/env|600"
   "site/volunteer-schedule.json|/etc/volunteer-book/schedule.json|644"
   "systemd/volunteer-book.service|/etc/systemd/system/volunteer-book.service|644"
   "secrets/volunteer-book.env|/etc/volunteer-book/env|600"
@@ -81,6 +84,8 @@ deploy)
   # волонтёрская запись v.kulagin.org: код, окружение или юнит — перезапуск (заявки на диске, не теряются);
   # расписание читается при каждом запросе — перезапуск не нужен
   [[ "$s" == *volunteer-book/app.py* || "$s" == */etc/volunteer-book/env* || "$s" == *volunteer-book.service* ]] && $SSH "systemctl enable --now volunteer-book >/dev/null 2>&1; systemctl restart volunteer-book" && echo "перезапущена запись волонтёрских встреч"
+  # бот листовок: код, окружение или юнит — перезапуск
+  [[ "$s" == *flyer-bot* ]] && $SSH "systemctl enable --now flyer-bot >/dev/null 2>&1; systemctl restart flyer-bot" && echo "перезапущен бот листовок"
   # конфиг nginx сайта — проверка и мягкая перезагрузка, ошибочный конфиг не применится
   [[ "$s" == */etc/nginx/sites-available/* ]] && $SSH "nginx -t && systemctl reload nginx" && echo "перезагружен nginx"
   ;;
@@ -92,7 +97,7 @@ pull)
   done
   ;;
 status)
-  $SSH 'echo "== службы"; for u in wg-quick@wg0 nftables tailscaled cam-archive-web cam-archive-clean.timer iperf3-wg alena-chat volunteer-book nginx $(systemctl list-units --plain --no-legend "cam-archive@*" | awk "{print \$1}"); do printf "  %-28s %s\n" "$u" "$(systemctl is-active $u)"; done
+  $SSH 'echo "== службы"; for u in wg-quick@wg0 nftables tailscaled cam-archive-web cam-archive-clean.timer iperf3-wg alena-chat volunteer-book flyer-bot nginx $(systemctl list-units --plain --no-legend "cam-archive@*" | awk "{print \$1}"); do printf "  %-28s %s\n" "$u" "$(systemctl is-active $u)"; done
     echo "== архив"; /usr/local/sbin/cam-archive-status
     echo "== туннель"; wg show wg0 latest-handshakes | awk "{print \"  рукопожатие \" systime()-\$2 \" с назад\"}"
     echo "== Tailscale"; tailscale serve status 2>/dev/null | sed "s/^/  /"

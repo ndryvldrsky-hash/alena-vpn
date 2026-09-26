@@ -1,0 +1,21 @@
+[Unit]
+Description=Бот @kulagin_flyers_bot: фото листовок → место в метках + фото на витрину (127.0.0.1:8093, наружу — nginx /tg/ и /tg-photo/)
+After=network-online.target
+
+[Service]
+# root нужен только чтобы вызывать volunteer-admin ref-geo (метки в /var/lib/volunteer-book); остальное закрыто
+EnvironmentFile=/etc/flyer-bot/env
+StateDirectory=flyer-bot
+ExecStart=/usr/bin/python3 /usr/local/lib/flyer-bot/app.py
+Restart=always
+RestartSec=5
+Nice=5
+MemoryMax=120M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/flyer-bot -/var/lib/volunteer-book -/var/lib/private/volunteer-book
+
+[Install]
+WantedBy=multi-user.target
