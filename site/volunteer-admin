@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Управление записью на волонтёрские встречи v.kulagin.org (на VPS, 2026-09-26).
+
+  volunteer-admin status            — JSON для сенсора HA: ближайшие заявки, число свободных слотов, расписание
+  volunteer-admin confirm <id>      — подтвердить встречу (Андрей связался с человеком)
+  volunteer-admin cancel <id>       — отменить: слот снова свободен
+  volunteer-admin done <id>         — встреча состоялась
+Заявки и расписание — те же файлы, что у службы volunteer-book (см. /usr/local/lib/volunteer-book/app.py).
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, "/usr/local/lib/volunteer-book")
+os.environ.setdefault("STATE_DIRECTORY", "/var/lib/volunteer-book")
+import app  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+
+cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+sch = app.schedule()
+tz = ZoneInfo(sch.get("tz", "Asia/Jerusalem"))
+with app.LOCK:
+    items = app.prune(app.load(), tz)
+    if cmd in ("confirm", "cancel", "done"):
+        bid = sys.argv[2] if len(sys.argv) > 2 else ""
+        hit = [b for b in items if b["id"] == bid]
+        if not hit:
+            print(json.dumps({"ok": False, "error": f"нет заявки {bid}"}, ensure_ascii=False))
+            sys.exit(1)
+        hit[0]["status"] = {"confirm": "confirmed", "cancel": "cancelled", "done": "done"}[cmd]
+        app.save(items)
+        app._log({"event": cmd, "id": bid})
+        print(json.dumps({"ok": True, "id": bid, "status": hit[0]["status"]}, ensure_ascii=False))
+        sys.exit(0)
+free = app.free_slots(sch, items)
+items.sort(key=lambda b: b["slot"])
+active = [b for b in items if b.get("status") in ("new", "confirmed")]
+out = {
+    "new": sum(1 for b in items if b.get("status") == "new"),
+    "confirmed": sum(1 for b in items if b.get("status") == "confirmed"),
+    "done": sum(1 for b in items if b.get("status") == "done"),
+    "free_slots": len(free),
+    "next_free": free[:6],
+    "bookings": [{k: v for k, v in b.items() if k != "ip"} for b in items][-20:],
+    "active": [{k: v for k, v in b.items() if k != "ip"} for b in active],
+    "schedule": {"weekly": sch.get("weekly"), "slot_minutes": sch.get("slot_minutes"),
+                 "days_ahead": sch.get("days_ahead"), "min_notice_hours": sch.get("min_notice_hours"),
+                 "blocked_dates": sch.get("blocked_dates", [])},
+}
+print(json.dumps(out, ensure_ascii=False))

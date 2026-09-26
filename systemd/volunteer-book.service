@@ -1,0 +1,16 @@
+[Unit]
+Description=Запись на волонтёрские встречи v.kulagin.org (127.0.0.1:8091, наружу — nginx /api/v/)
+After=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=volunteer-book
+EnvironmentFile=/etc/volunteer-book/env
+ExecStart=/usr/bin/python3 /usr/local/lib/volunteer-book/app.py
+Restart=always
+RestartSec=5
+Nice=5
+MemoryMax=60M
+
+[Install]
+WantedBy=multi-user.target

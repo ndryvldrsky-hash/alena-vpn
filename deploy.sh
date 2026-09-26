@@ -26,6 +26,13 @@ FILES=(
   "site/chat-status|/usr/local/sbin/chat-status|755"
   "site/chat-dialog|/usr/local/sbin/chat-dialog|755"
   "site/nginx-kulagin.org.conf|/etc/nginx/sites-available/kulagin.org|644"
+  "site/nginx-v.kulagin.org.conf|/etc/nginx/sites-available/v.kulagin.org|644"
+  "site/volunteer_book.py|/usr/local/lib/volunteer-book/app.py|644"
+  "site/volunteer-admin|/usr/local/sbin/volunteer-admin|755"
+  "site/volunteer-schedule.json|/etc/volunteer-book/schedule.json|644"
+  "systemd/volunteer-book.service|/etc/systemd/system/volunteer-book.service|644"
+  "secrets/volunteer-book.env|/etc/volunteer-book/env|600"
+  "../kulagin_v/index.html|/var/www/v.kulagin.org/index.html|644"
   "systemd/alena-chat.service|/etc/systemd/system/alena-chat.service|644"
   "secrets/alena-chat.env|/etc/alena-chat/env|600"
   "systemd/cam-archive-watchdog.service|/etc/systemd/system/cam-archive-watchdog.service|644"
@@ -65,14 +72,17 @@ deploy)
   if [[ "$s" == *cam-archive-record* || "$s" == *cam-archive@.service* || "$s" == *rtsp.env* ]]; then
     $SSH 'systemctl restart $(systemctl list-units --plain --no-legend "cam-archive@*" | awk "{print \$1}")' && echo "перезапущена запись камер"
   fi
-  [[ "$s" == *cam-archive-web* || "$s" == *app.py* ]] && $SSH "systemctl restart cam-archive-web" && echo "перезапущен веб-плеер"
+  [[ "$s" == *cam-archive-web* ]] && $SSH "systemctl restart cam-archive-web" && echo "перезапущен веб-плеер"
   [[ "$s" == *cam-archive-clean* ]] && $SSH "systemctl restart cam-archive-clean.timer" && echo "перезапущен таймер очистки"
   [[ "$s" == *cam-archive-watchdog* ]] && $SSH "systemctl enable --now cam-archive-watchdog.timer >/dev/null 2>&1; systemctl restart cam-archive-watchdog.timer" && echo "перезапущен сторож записи"
   [[ "$s" == *iperf3-wg* ]] && $SSH "systemctl restart iperf3-wg" && echo "перезапущен iperf3"
   # чат с Алёной: код, промпт, окружение или юнит — перезапуск службы (открытые диалоги в памяти теряются, лог остаётся)
   [[ "$s" == *alena-chat* ]] && $SSH "systemctl enable --now alena-chat >/dev/null 2>&1; systemctl restart alena-chat" && echo "перезапущен чат с Алёной"
+  # волонтёрская запись v.kulagin.org: код, окружение или юнит — перезапуск (заявки на диске, не теряются);
+  # расписание читается при каждом запросе — перезапуск не нужен
+  [[ "$s" == *volunteer-book/app.py* || "$s" == */etc/volunteer-book/env* || "$s" == *volunteer-book.service* ]] && $SSH "systemctl enable --now volunteer-book >/dev/null 2>&1; systemctl restart volunteer-book" && echo "перезапущена запись волонтёрских встреч"
   # конфиг nginx сайта — проверка и мягкая перезагрузка, ошибочный конфиг не применится
-  [[ "$s" == */etc/nginx/sites-available/kulagin.org* ]] && $SSH "nginx -t && systemctl reload nginx" && echo "перезагружен nginx"
+  [[ "$s" == */etc/nginx/sites-available/* ]] && $SSH "nginx -t && systemctl reload nginx" && echo "перезагружен nginx"
   ;;
 pull)
   for e in "${FILES[@]}" "${PULL_ONLY[@]}"; do
@@ -82,7 +92,7 @@ pull)
   done
   ;;
 status)
-  $SSH 'echo "== службы"; for u in wg-quick@wg0 nftables tailscaled cam-archive-web cam-archive-clean.timer iperf3-wg alena-chat nginx $(systemctl list-units --plain --no-legend "cam-archive@*" | awk "{print \$1}"); do printf "  %-28s %s\n" "$u" "$(systemctl is-active $u)"; done
+  $SSH 'echo "== службы"; for u in wg-quick@wg0 nftables tailscaled cam-archive-web cam-archive-clean.timer iperf3-wg alena-chat volunteer-book nginx $(systemctl list-units --plain --no-legend "cam-archive@*" | awk "{print \$1}"); do printf "  %-28s %s\n" "$u" "$(systemctl is-active $u)"; done
     echo "== архив"; /usr/local/sbin/cam-archive-status
     echo "== туннель"; wg show wg0 latest-handshakes | awk "{print \"  рукопожатие \" systime()-\$2 \" с назад\"}"
     echo "== Tailscale"; tailscale serve status 2>/dev/null | sed "s/^/  /"
