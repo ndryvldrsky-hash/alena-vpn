@@ -12,6 +12,8 @@
   volunteer-admin refs              — все метки: что за ними, переходы (visit) и заявки
   volunteer-admin ref-note <метка|№листовки> <пометка…>
                                     — сменить пометку (например, «адрес 3» → настоящий адрес), 2026-09-26
+  volunteer-admin ref-geo <метка|№листовки> <широта> <долгота> <точность_м> <адрес…>
+                                    — где висит листовка: координаты с телефона + адрес (пометка = адрес), 2026-09-26
 Метки — непрозрачные случайные строки (ссылка v.kulagin.org/<метка>); расшифровка — только в refs.json.
 Заявки, расписание и метки — те же файлы, что у службы volunteer-book (см. /usr/local/lib/volunteer-book/app.py).
 """
@@ -91,6 +93,29 @@ if cmd == "ref-new":
     print(json.dumps({"ok": True, "refs": made}, ensure_ascii=False))
     sys.exit(0)
 
+def find_ref(refs, key):
+    key = key.lower()
+    return [r for r, v in refs.items()
+            if r == key or (key.isdigit() and v.get("src") == "flyer" and v.get("serial") == int(key))]
+
+
+if cmd == "ref-geo":
+    refs = load_refs()
+    hit = find_ref(refs, sys.argv[2] if len(sys.argv) > 2 else "")
+    try:
+        lat, lon, acc = float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
+    except (IndexError, ValueError):
+        hit = []
+    addr = " ".join(sys.argv[6:])[:120]
+    if not hit or not addr:
+        print(json.dumps({"ok": False, "error": "нужно: ref-geo <метка|№> <широта> <долгота> <точность_м> <адрес>"}, ensure_ascii=False))
+        sys.exit(1)
+    refs[hit[0]].update({"note": addr, "lat": round(lat, 7), "lon": round(lon, 7), "acc_m": round(acc, 4),
+                         "placed": dt.datetime.now().isoformat(timespec="seconds")})
+    save_refs(refs)
+    print(json.dumps({"ok": True, "r": hit[0], **refs[hit[0]]}, ensure_ascii=False))
+    sys.exit(0)
+
 if cmd == "ref-note":
     key = sys.argv[2].lower() if len(sys.argv) > 2 else ""
     note = " ".join(sys.argv[3:])[:120]
@@ -142,6 +167,9 @@ out = {
     "flyers": {"copies": sum(1 for x in refs if x.get("src") == "flyer"),
                "visitors": sum(x["visitors"] for x in refs if x.get("src") == "flyer"),
                "bookings": sum(x["bookings"] for x in refs if x.get("src") == "flyer"),
-               "active": [x for x in refs if x.get("src") == "flyer" and (x["visitors"] or x["bookings"])]},
+               "active": [x for x in refs if x.get("src") == "flyer" and (x["visitors"] or x["bookings"])],
+               # все экземпляры: где висят (адрес, координаты с телефона) — для витрины «Реклама» (2026-09-26)
+               "list": [{k: x.get(k) for k in ("serial", "r", "note", "lat", "lon", "acc_m", "placed", "visitors", "bookings")}
+                        for x in refs if x.get("src") == "flyer"]},
 }
 print(json.dumps(out, ensure_ascii=False))
