@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
 """Управление записью на волонтёрские встречи v.kulagin.org (на VPS, 2026-09-26).
 
-  volunteer-admin status            — JSON для сенсора HA: ближайшие заявки, число свободных слотов, расписание
+  volunteer-admin status            — JSON для сенсора HA: ближайшие заявки, свободные слоты, расписание, метки
   volunteer-admin confirm <id>      — подтвердить встречу (Андрей связался с человеком)
   volunteer-admin cancel <id>       — отменить: слот снова свободен
   volunteer-admin done <id>         — встреча состоялась
-Заявки и расписание — те же файлы, что у службы volunteer-book (см. /usr/local/lib/volunteer-book/app.py).
+  volunteer-admin ref-new <src> <ad_lang> [count] [note…]
+                                    — создать метки для ссылок: src wa|fb|tg|flyer|…, ad_lang — язык объявления
+                                      (he/ru/en/fr/ar/he-ru). Объявлениям — одна метка из 5 символов; листовкам (flyer)
+                                      — count уникальных меток из 7 символов, у каждой свой № экземпляра. Печатает JSON.
+  volunteer-admin refs              — все метки: что за ними, переходы (visit) и заявки
+  volunteer-admin ref-note <метка|№листовки> <пометка…>
+                                    — сменить пометку (например, «адрес 3» → настоящий адрес), 2026-09-26
+Метки — непрозрачные случайные строки (ссылка v.kulagin.org/<метка>); расшифровка — только в refs.json.
+Заявки, расписание и метки — те же файлы, что у службы volunteer-book (см. /usr/local/lib/volunteer-book/app.py).
 """
+import datetime as dt
 import json
 import os
+import secrets
 import sys
 
 sys.path.insert(0, "/usr/local/lib/volunteer-book")
@@ -16,7 +26,84 @@ os.environ.setdefault("STATE_DIRECTORY", "/var/lib/volunteer-book")
 import app  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 
+ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"     # без 0/o, 1/l/i — чтобы метку можно было продиктовать
+UI_LANGS = {"he", "ru", "en", "fr", "ar"}
+
+
+def load_refs():
+    try:
+        with open(app.REFS, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_refs(refs):
+    tmp = app.REFS + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(refs, f, ensure_ascii=False, indent=1)
+    os.chmod(tmp, 0o644)                 # служба (DynamicUser) должна читать файл, созданный root
+    os.replace(tmp, app.REFS)
+
+
+def ref_stats(refs, items):
+    visits = {}
+    try:
+        with open(app.LOG, encoding="utf-8") as f:
+            for line in f:
+                if '"visit"' in line:
+                    e = json.loads(line)
+                    visits.setdefault(e.get("r"), set()).add(e.get("ip"))
+    except OSError:
+        pass
+    out = []
+    for r, info in refs.items():
+        out.append({"r": r, **info, "visitors": len(visits.get(r, ())),
+                    "bookings": sum(1 for b in items if b.get("r") == r and not b.get("owner"))})   # тесты хозяина не считаем
+    out.sort(key=lambda x: (x.get("created", ""), x.get("serial") or 0))
+    return out
+
+
 cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+
+if cmd == "ref-new":
+    src = sys.argv[2].lower() if len(sys.argv) > 2 else ""
+    ad_lang = sys.argv[3].lower() if len(sys.argv) > 3 else ""
+    count = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4].isdigit() else 1
+    note = " ".join(sys.argv[5:] if len(sys.argv) > 4 and sys.argv[4].isdigit() else sys.argv[4:])[:120]
+    if not src or not ad_lang:
+        print(json.dumps({"ok": False, "error": "нужно: ref-new <src> <ad_lang> [count] [note]"}, ensure_ascii=False))
+        sys.exit(1)
+    qr = src == "flyer"
+    refs = load_refs()
+    serial0 = max([v.get("serial") or 0 for v in refs.values() if v.get("src") == src] + [0])
+    made = []
+    for i in range(count if qr else 1):
+        while True:
+            r = "".join(secrets.choice(ALPHABET) for _ in range(7 if qr else 5))
+            if r not in refs:
+                break
+        refs[r] = {"src": src, "ad_lang": ad_lang, "ui_lang": ad_lang if ad_lang in UI_LANGS else "",
+                   "serial": serial0 + i + 1 if qr else None, "note": note,
+                   "created": dt.datetime.now().isoformat(timespec="seconds")}
+        made.append({"r": r, "url": f"https://v.kulagin.org/{r}", **refs[r]})
+    save_refs(refs)
+    print(json.dumps({"ok": True, "refs": made}, ensure_ascii=False))
+    sys.exit(0)
+
+if cmd == "ref-note":
+    key = sys.argv[2].lower() if len(sys.argv) > 2 else ""
+    note = " ".join(sys.argv[3:])[:120]
+    refs = load_refs()
+    hit = [r for r, v in refs.items() if r == key or (key.isdigit() and v.get("src") == "flyer" and v.get("serial") == int(key))]
+    if not hit or not note:
+        print(json.dumps({"ok": False, "error": f"нет метки/листовки {key} или пустая пометка"}, ensure_ascii=False))
+        sys.exit(1)
+    refs[hit[0]]["note"] = note
+    save_refs(refs)
+    print(json.dumps({"ok": True, "r": hit[0], **refs[hit[0]]}, ensure_ascii=False))
+    sys.exit(0)
+
 sch = app.schedule()
 tz = ZoneInfo(sch.get("tz", "Asia/Jerusalem"))
 with app.LOCK:
@@ -32,6 +119,10 @@ with app.LOCK:
         app._log({"event": cmd, "id": bid})
         print(json.dumps({"ok": True, "id": bid, "status": hit[0]["status"]}, ensure_ascii=False))
         sys.exit(0)
+refs = ref_stats(load_refs(), items)
+if cmd == "refs":
+    print(json.dumps(refs, ensure_ascii=False, indent=1))
+    sys.exit(0)
 free = app.free_slots(sch, items)
 items.sort(key=lambda b: b["slot"])
 active = [b for b in items if b.get("status") in ("new", "confirmed")]
@@ -46,5 +137,11 @@ out = {
     "schedule": {"weekly": sch.get("weekly"), "slot_minutes": sch.get("slot_minutes"),
                  "days_ahead": sch.get("days_ahead"), "min_notice_hours": sch.get("min_notice_hours"),
                  "blocked_dates": sch.get("blocked_dates", [])},
+    # метки: объявления целиком, листовки — сводкой (экземпляров может быть много)
+    "refs": [x for x in refs if x.get("src") != "flyer"],
+    "flyers": {"copies": sum(1 for x in refs if x.get("src") == "flyer"),
+               "visitors": sum(x["visitors"] for x in refs if x.get("src") == "flyer"),
+               "bookings": sum(x["bookings"] for x in refs if x.get("src") == "flyer"),
+               "active": [x for x in refs if x.get("src") == "flyer" and (x["visitors"] or x["bookings"])]},
 }
 print(json.dumps(out, ensure_ascii=False))
