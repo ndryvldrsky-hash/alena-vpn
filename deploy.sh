@@ -88,6 +88,8 @@ deploy)
   [[ "$s" == *flyer-bot* ]] && $SSH "systemctl enable --now flyer-bot >/dev/null 2>&1; systemctl restart flyer-bot" && echo "перезапущен бот листовок"
   # конфиг nginx сайта — проверка и мягкая перезагрузка, ошибочный конфиг не применится
   [[ "$s" == */etc/nginx/sites-available/* ]] && $SSH "nginx -t && systemctl reload nginx" && echo "перезагружен nginx"
+  # ложная последняя проверка иначе становится кодом выхода скрипта (rc=1 при успешной выкладке)
+  true
   ;;
 pull)
   for e in "${FILES[@]}" "${PULL_ONLY[@]}"; do

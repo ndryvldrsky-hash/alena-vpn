@@ -14,5 +14,5 @@
     "sat": []
   },
   "blocked_dates": [],
-  "blocked_slots": []
+  "blocked_slots": ["2026-10-01T10:00", "2026-10-01T13:00"]
 }

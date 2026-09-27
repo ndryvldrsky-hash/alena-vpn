@@ -161,7 +161,8 @@ out = {
     "active": [{k: v for k, v in b.items() if k != "ip"} for b in active],
     "schedule": {"weekly": sch.get("weekly"), "slot_minutes": sch.get("slot_minutes"),
                  "days_ahead": sch.get("days_ahead"), "min_notice_hours": sch.get("min_notice_hours"),
-                 "blocked_dates": sch.get("blocked_dates", [])},
+                 "blocked_dates": sch.get("blocked_dates", []),
+                 "blocked_slots": sch.get("blocked_slots", [])},
     # метки: объявления целиком, листовки — сводкой (экземпляров может быть много)
     "refs": [x for x in refs if x.get("src") != "flyer"],
     "flyers": {"copies": sum(1 for x in refs if x.get("src") == "flyer"),
