@@ -2,7 +2,9 @@
 """Бот @kulagin_flyers_bot: фото повешенной листовки → её место в метках + фото на витрину (2026-09-26).
 
 Пользователь на месте фотографирует листовку и шлёт боту фото КАК ФАЙЛ (иначе Telegram вырезает EXIF с GPS)
-с подписью «3» (№ экземпляра — серый номер в углу листовки). Инициатива — со стороны Telegram: вебхук
+с подписью «3» (№ экземпляра — серый номер в углу листовки). Если к файлу подпись не добавить (в Telegram на телефоне
+при отправке «Файлом» поля подписи бывает нет) — номер можно прислать отдельным сообщением «7»: до файла, после него
+(в течение 30 мин, pending.json) или ответом на уже присланный файл. Инициатива — со стороны Telegram: вебхук
 https://kulagin.org<WEBHOOK_PATH> (nginx → 127.0.0.1:8093), заголовок X-Telegram-Bot-Api-Secret-Token сверяется.
 
 Что делает на каждое фото:
@@ -152,18 +154,90 @@ def handle(msg):
         return
     doc, photo = msg.get("document"), msg.get("photo")
     if not doc and not photo:
-        if (msg.get("text") or "").startswith("/start"):
-            reply(chat, "Пришлите фото повешенной листовки КАК ФАЙЛ (скрепка → Файл), в подписи — её номер, например 3.")
+        text = msg.get("text") or ""
+        if text.startswith("/start"):
+            reply(chat, "Пришлите фото повешенной листовки КАК ФАЙЛ (скрепка → Файл) и её номер — в подписи "
+                        "или отдельным сообщением (до или после файла), например 3.")
+            return
+        num = re.fullmatch(r"\s*(?:№|#|n)?\s*(\d+)\s*", text, re.I)
+        if not num:
+            return
+        serial = int(num.group(1))
+        # ответом на уже присланный файл — берём файл из того сообщения
+        orig = msg.get("reply_to_message") or {}
+        if orig.get("document") or orig.get("photo"):
+            f = _file_of(orig)
+            if f:
+                process(chat, orig.get("message_id"), f[0], f[1], serial)
+            else:
+                reply(chat, "Это не картинка — пришлите фото листовки.", mid)
+            return
+        p = pending_swap("file", "serial", {"n": serial})
+        if p:
+            process(chat, p["mid"], p["fid"], p["as_file"], serial)
+        else:
+            reply(chat, f"№{serial} — жду файл с фото.", mid)
         return
-    serial = re.search(r"\d+", msg.get("caption") or "")
-    if not serial:
-        reply(chat, "Нужен номер листовки в подписи к фото (серый номер в углу), например 3.", mid)
-        return
-    serial = int(serial.group())
-    if doc and not (doc.get("mime_type") or "").startswith("image/"):
+    f = _file_of(msg)
+    if not f:
         reply(chat, "Это не картинка — пришлите фото листовки.", mid)
         return
-    fid = doc["file_id"] if doc else max(photo, key=lambda p: p.get("file_size", 0))["file_id"]
+    serial = re.search(r"\d+", msg.get("caption") or "")
+    if serial:
+        pending_swap("serial")                           # подпись главнее — старый ждущий номер сбрасываем
+        serial = int(serial.group())
+    else:
+        p = pending_swap("serial", "file", {"fid": f[0], "as_file": f[1], "mid": mid})
+        if not p:
+            reply(chat, "Файл получен. Какой это номер? Напишите цифру отдельным сообщением.", mid)
+            return
+        serial = p["n"]
+    process(chat, mid, f[0], f[1], serial)
+
+
+def _file_of(msg):
+    """(file_id, как_файл) картинки из сообщения или None."""
+    doc, photo = msg.get("document"), msg.get("photo")
+    if doc:
+        return (doc["file_id"], True) if (doc.get("mime_type") or "").startswith("image/") else None
+    if photo:
+        return max(photo, key=lambda p: p.get("file_size", 0))["file_id"], False
+    return None
+
+
+# ---------- номер и файл по отдельности: ждём вторую половину PENDING_TTL секунд ----------
+PENDING = os.path.join(STATE, "pending.json")
+PENDING_TTL = 30 * 60
+_lock = threading.Lock()
+
+
+def _pending_load():
+    try:
+        with open(PENDING, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def pending_swap(take, put=None, value=None):
+    """Под одним замком: забрать свежую половину `take`, а если её нет — оставить свою `put`=value.
+    Атомарно — номер и файл, пришедшие почти одновременно (разные потоки), не разминутся."""
+    with _lock:
+        d = _pending_load()
+        p = d.pop(take, None)
+        if p and time.time() - p.get("ts", 0) >= PENDING_TTL:
+            p = None
+        if p:
+            d.pop(put, None)
+        elif put:
+            d[put] = dict(value, ts=time.time())
+        with open(PENDING, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+        return p
+
+
+def process(chat, mid, fid, as_file, serial):
+    doc = as_file
     info = tg("getFile", file_id=fid)["result"]
     if info.get("file_size", 0) > MAX_FILE:
         reply(chat, "Файл больше 20 МБ — Telegram не отдаёт такие ботам. Пришлите поменьше.", mid)
@@ -184,7 +258,10 @@ def handle(msg):
     lat, lon, acc = gps
     addr = address(lat, lon)
     r = subprocess.run(["/usr/local/sbin/volunteer-admin", "ref-geo", str(serial), f"{lat:.7f}", f"{lon:.7f}",
-                        f"{acc if acc is not None else 0:.4f}", addr], capture_output=True, text=True, timeout=30)
+                        f"{acc if acc is not None else 0:.4f}", addr], capture_output=True, text=True, timeout=30,
+                       # без STATE_DIRECTORY: systemd даёт боту свой (/var/lib/flyer-bot), и volunteer-admin
+                       # искал бы метки там, в пустоте, а не в /var/lib/volunteer-book (28.09, №7)
+                       env={k: v for k, v in os.environ.items() if k != "STATE_DIRECTORY"})
     ok = r.returncode == 0
     ev.update({"lat": round(lat, 7), "lon": round(lon, 7), "acc": acc, "addr": addr, "ref_geo": ok})
     log(ev)
