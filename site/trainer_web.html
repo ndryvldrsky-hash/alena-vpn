@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Тренажёр иврита</title>
+<!-- 30.09.2026: тренажёр чтения для телефона — копия окна на XPS (тренажёр_чтения.py); сервер — trainer_web.py -->
+<style>
+  :root { --bg:#111418; --fg:#ffffff; --muted:#8a93a0; --ru:#9fc5e8; --ok:#7fd18b; --warn:#e0c060; --bad:#ff6a6a; --card:#1b2027; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,"Segoe UI",Roboto,sans-serif; }
+  body { padding:16px; padding-bottom:calc(16px + env(safe-area-inset-bottom)); min-height:100vh; display:flex; flex-direction:column; gap:14px; }
+  #he { font-size:clamp(26px,8vw,40px); font-weight:700; direction:rtl; text-align:right; line-height:1.5; }
+  #ru { color:var(--ru); font-size:17px; }
+  #num { color:var(--muted); font-size:14px; }
+  .row { display:flex; gap:10px; }
+  button { flex:1; border:0; border-radius:14px; font-size:18px; font-weight:700; padding:16px 10px; color:#111418; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  #play { background:var(--ok); }
+  #rec { background:#ff8080; font-size:20px; padding:22px 10px; }
+  #rec.on { background:var(--bad); animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.7; } }
+  .nav { background:var(--card); color:var(--fg); font-size:22px; flex:0 0 64px; }
+  #again { background:var(--card); color:var(--fg); font-size:16px; }
+  #state { font-weight:700; color:var(--warn); min-height:1.4em; }
+  #fb { background:var(--card); border-radius:14px; padding:14px; font-size:16px; line-height:1.5; display:none; }
+  #fb .p { margin:6px 0; }
+  #fb .w { direction:rtl; unicode-bidi:isolate; font-weight:700; }
+  #fb .tip { margin-top:10px; color:var(--ru); }
+</style>
+</head>
+<body>
+  <div id="num"></div>
+  <div id="he"></div>
+  <div id="ru"></div>
+  <div class="row"><button id="play">▶ Послушать быстро</button></div>
+  <div class="row"><button id="rec">🎙 Записать</button></div>
+  <div id="state"></div>
+  <div id="fb"></div>
+  <div class="row"><button class="nav" id="prev">←</button><button id="again">↺ Ещё раз</button><button class="nav" id="next">→</button></div>
+<script>
+const $ = id => document.getElementById(id);
+let P = [], i = 0, fast = true, rec = null, audio = null;
+try { i = +localStorage.getItem("trainer_i") || 0; } catch (e) {}
+
+function state(t, c) { $("state").textContent = t; $("state").style.color = c || "var(--warn)"; }
+function sampleUrl(j, f) { return `sample?i=${j}&fast=${f ? 1 : 0}`; }
+
+function show() {
+  const p = P[i];
+  $("num").textContent = `${i + 1} / ${P.length}`;
+  $("he").textContent = p.he;
+  $("ru").textContent = p.ru;
+  $("fb").style.display = "none";
+  fast = true;                               // на новой фразе первым — быстрый вариант
+  $("play").textContent = "▶ Послушать быстро";
+  state("Нажмите «Записать» и прочитайте фразу");
+  try { localStorage.setItem("trainer_i", i); } catch (e) {}
+  // образцы текущей и следующей фразы готовим заранее — сервер их кэширует
+  for (const j of [i, (i + 1) % P.length]) for (const f of [true, false]) fetch(sampleUrl(j, f)).catch(() => {});
+}
+
+$("play").onclick = () => {
+  const f = fast;
+  fast = !fast;
+  $("play").textContent = fast ? "▶ Послушать быстро" : "▶ Послушать медленно";
+  if (audio) audio.pause();
+  state("⏳ Образец…");
+  audio = new Audio(sampleUrl(i, f));
+  audio.onplaying = () => state("▶ Слушайте образец", "var(--ok)");
+  audio.onended = () => state("Теперь «Записать»");
+  audio.onerror = () => state("⚠ Образец не загрузился", "var(--bad)");
+  audio.play().catch(e => state("⚠ " + e.message, "var(--bad)"));
+};
+
+function move(d) { if (!rec) { i = (i + d + P.length) % P.length; show(); } }
+$("prev").onclick = () => move(-1);
+$("next").onclick = () => move(1);
+$("again").onclick = () => { if (!rec) show(); };
+
+// Запись: AudioContext → PCM → WAV 16 кГц моно (Gemini понимает WAV; MediaRecorder на Android даёт только webm)
+async function start() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = ctx.createMediaStreamSource(stream);
+  const node = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  node.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  src.connect(node); node.connect(ctx.destination);
+  rec = { stream, ctx, node, src, chunks };
+  $("rec").classList.add("on"); $("rec").textContent = "⏹ Стоп";
+  state("🔴 Запись… читайте фразу", "var(--bad)");
+}
+
+function toWav(chunks, rate) {
+  let n = chunks.reduce((a, c) => a + c.length, 0), all = new Float32Array(n), o = 0;
+  for (const c of chunks) { all.set(c, o); o += c.length; }
+  const ratio = rate / 16000, m = Math.floor(n / ratio), pcm = new Int16Array(m);
+  for (let k = 0; k < m; k++) {                 // понижение частоты: среднее по окну
+    const a = Math.floor(k * ratio), b = Math.min(n, Math.floor((k + 1) * ratio));
+    let s = 0; for (let t = a; t < b; t++) s += all[t];
+    const v = Math.max(-1, Math.min(1, s / Math.max(1, b - a)));
+    pcm[k] = v < 0 ? v * 0x8000 : v * 0x7fff;
+  }
+  const buf = new ArrayBuffer(44 + pcm.length * 2), dv = new DataView(buf);
+  const str = (p, s) => { for (let k = 0; k < s.length; k++) dv.setUint8(p + k, s.charCodeAt(k)); };
+  str(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  str(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function stop() {
+  const r = rec; rec = null;
+  r.node.disconnect(); r.src.disconnect(); r.stream.getTracks().forEach(t => t.stop());
+  const rate = r.ctx.sampleRate; await r.ctx.close();
+  $("rec").classList.remove("on"); $("rec").textContent = "🎙 Записать"; $("rec").disabled = true;
+  state("⏳ Gemini слушает…");
+  const j = i;
+  try {
+    const resp = await fetch(`judge?i=${j}`, { method: "POST", body: toWav(r.chunks, rate), headers: { "Content-Type": "audio/wav" } });
+    const d = await resp.json();
+    if (d.error) throw new Error(d.error);
+    if (j === i) render(d);
+  } catch (e) { state("⚠ " + e.message + " — запишите ещё раз", "var(--bad)"); }
+  $("rec").disabled = false;
+}
+
+function esc(s) { return String(s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+function render(d) {
+  const s = Math.max(0, Math.min(5, parseInt(d.score) || 0));
+  state(`Оценка: ${"★".repeat(s)}${"☆".repeat(5 - s)} (${s}/5)`, s >= 4 ? "var(--ok)" : s === 3 ? "var(--warn)" : "#ff9060");
+  let h = `<div>Прозвучало: <b>${esc(d.heard)}</b></div>`;
+  const pr = d.problems || [];
+  for (const p of pr) h += typeof p === "object"
+    ? `<div class="p">• <span class="w">${esc(p.word)}</span>: «${esc(p.said)}» → «${esc(p.should)}» — ${esc(p.fix)}</div>`
+    : `<div class="p">• ${esc(p)}</div>`;
+  if (!pr.length) h += `<div class="p">• Ошибок не слышно 👍</div>`;
+  if (d.tip) h += `<div class="tip">💡 ${esc(d.tip)}</div>`;
+  $("fb").innerHTML = h; $("fb").style.display = "block";
+}
+
+$("rec").onclick = () => {
+  if (rec) return stop();
+  if (audio) audio.pause();
+  start().catch(e => state("⚠ Нет доступа к микрофону: " + e.message, "var(--bad)"));
+};
+
+fetch("phrases").then(r => r.json()).then(p => { P = p; if (i >= P.length) i = 0; show(); })
+  .catch(e => state("⚠ Фразы не загрузились: " + e.message, "var(--bad)"));
+</script>
+</body>
+</html>
