@@ -27,6 +27,11 @@
   #fb .p { margin:6px 0; }
   #fb .w { direction:rtl; unicode-bidi:isolate; font-weight:700; }
   #fb .tip { margin-top:10px; color:var(--ru); }
+  /* 30.09: разбор фразы — простым текстом под жёлтой надписью */
+  #an { font-size:15px; line-height:1.5; color:#c9d1d9; }
+  #an .w { margin:4px 0; }
+  #an .he { direction:rtl; unicode-bidi:isolate; font-weight:700; color:#fff; }
+  #an .n { margin-top:8px; color:var(--ru); }
 </style>
 </head>
 <body>
@@ -37,6 +42,7 @@
   <div class="row"><button id="rec">🎙 Записать</button></div>
   <div id="state"></div>
   <div id="fb"></div>
+  <div id="an"></div>
   <div class="row"><button class="nav" id="prev">←</button><button id="again">↺ Ещё раз</button><button class="nav" id="next">→</button></div>
 <script>
 const $ = id => document.getElementById(id);
@@ -52,6 +58,7 @@ function show() {
   $("he").textContent = p.he;
   $("ru").textContent = p.ru;
   $("fb").style.display = "none";
+  showAnalysis(p.analysis);
   fast = true;                               // на новой фразе первым — быстрый вариант
   $("play").textContent = "▶ Послушать быстро";
   state("Нажмите «Записать» и прочитайте фразу");
@@ -126,6 +133,15 @@ async function stop() {
     if (j === i) render(d);
   } catch (e) { state("⚠ " + e.message + " — запишите ещё раз", "var(--bad)"); }
   $("rec").disabled = false;
+}
+
+function showAnalysis(a) {
+  if (!a) { $("an").innerHTML = ""; return; }
+  // ивритские слова и словосочетания внутри русского текста — изолированно справа налево
+  const heb = t => esc(t).replace(/[\u0590-\u05ff][\u0590-\u05ff\s\-־'".,]*[\u0590-\u05ff]|[\u0590-\u05ff]/g, m => `<bdi dir="rtl">${m}</bdi>`);
+  let h = (a.words || []).map(w => `<div class="w">• <span class="he">${esc(w.he)}</span> [${esc(w.tr)}] — ${esc(w.ru)}. ${heb(w.gram)}</div>`).join("");
+  h += (a.notes || []).map(n => `<div class="n">💡 ${heb(n)}</div>`).join("");
+  $("an").innerHTML = h;
 }
 
 function esc(s) { return String(s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
