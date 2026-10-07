@@ -107,6 +107,12 @@ SYSTEM_PROMPT = open(PROMPT_FILE, encoding="utf-8").read()
 BRIDGE_TOKEN = os.environ.get("BRIDGE_TOKEN", "")
 PROMPT_WA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_wa.md")
 PROMPT_WA = open(PROMPT_WA_FILE, encoding="utf-8").read() if os.path.exists(PROMPT_WA_FILE) else SYSTEM_PROMPT
+# Канал Telegram «знакомые» (07.10.2026): мост в доме (присмотр_telegram.py) ведёт личную переписку от имени хозяина с людьми,
+# которые сами ему пишут. channel=telegram_friend — промпт prompt_tg.md; заметка о собеседнике приходит от моста (поле note),
+# на VPS ничего личного не хранится. Без этого файла канал отвечает только передачей хозяину.
+PROMPT_TG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_tg.md")
+PROMPT_TG = open(PROMPT_TG_FILE, encoding="utf-8").read() if os.path.exists(PROMPT_TG_FILE) else ""
+BRIDGE_CHANNELS = ("whatsapp", "telegram_friend")
 IP_SALT = secrets.token_hex(8)          # соль на время жизни процесса: хеши IP не сопоставимы между рестартами
 
 _lock = threading.Lock()
@@ -195,6 +201,12 @@ def _allowed(iph):
 # ---------- Claude ----------
 def _system(lang, channel="site", note=""):
     """Первый блок — постоянный (кешируется на час), второй — язык беседы и контекст, меняется от сессии к сессии."""
+    if channel == "telegram_friend":
+        return [
+            {"type": "text", "text": PROMPT_TG or "Ответь ровно одной строкой: @@ХОЗЯИНУ@@ нет подсказки канала",
+             "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            {"type": "text", "text": f"Заметка о собеседнике: {note or 'сведений нет — будь особенно осторожна, при сомнении передай хозяину'}"},
+        ]
     if channel == "whatsapp":
         return [
             {"type": "text", "text": PROMPT_WA, "cache_control": {"type": "ephemeral", "ttl": "1h"}},
@@ -394,16 +406,18 @@ class Handler(BaseHTTPRequestHandler):
             history.pop(0)
         if history and history[-1]["role"] == "user":
             history.pop()
-        sess = {"id": sid, "lang": lang, "channel": "whatsapp", "note": str(data.get("note", ""))[:300],
+        channel = data.get("channel") if data.get("channel") in BRIDGE_CHANNELS else "whatsapp"
+        sess = {"id": sid, "lang": lang, "channel": channel, "note": str(data.get("note", ""))[:300 if channel == "whatsapp" else 3000],
                 "messages": history + [{"role": "user", "content": msg}]}
         try:
             text, usage, stop = _stream_reply(sess, lambda chunk: None)
             cost = _cost(usage)
             if stop == "refusal":
-                text = REFUSAL_TEXT.get(lang, REFUSAL_TEXT["ru"])
+                # знакомому хозяина дежурный отказ отправлять нельзя — пусть решает хозяин
+                text = "@@ХОЗЯИНУ@@ модель отказалась отвечать" if channel == "telegram_friend" else REFUSAL_TEXT.get(lang, REFUSAL_TEXT["ru"])
                 _count("refusals")
             _count("messages", cost)
-            _log({"event": "wa_turn", "session": sid, "lang": lang, "user": msg, "assistant": text, "stop": stop,
+            _log({"event": "wa_turn" if channel == "whatsapp" else "tg_turn", "session": sid, "lang": lang, "user": msg, "assistant": text, "stop": stop,
                   "usage": {"in": usage.input_tokens, "out": usage.output_tokens,
                             "cache_read": usage.cache_read_input_tokens or 0, "cache_write": usage.cache_creation_input_tokens or 0},
                   "cost_usd": round(cost, 5)})
@@ -594,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
             lang = "ru"
         msg = msg[:MAX_MSG_CHARS]
         bridge = bool(BRIDGE_TOKEN) and self.headers.get("X-Bridge-Token") == BRIDGE_TOKEN
-        if bridge and data.get("channel") == "whatsapp":
+        if bridge and data.get("channel") in BRIDGE_CHANNELS:
             return self._bridge_turn(sid, lang, msg, data)
         iph = _ip_hash(self._ip())
         if self._owner_intercept(sid, msg, iph):
