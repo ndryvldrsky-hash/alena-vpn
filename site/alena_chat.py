@@ -112,7 +112,11 @@ PROMPT_WA = open(PROMPT_WA_FILE, encoding="utf-8").read() if os.path.exists(PROM
 # на VPS ничего личного не хранится. Без этого файла канал отвечает только передачей хозяину.
 PROMPT_TG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_tg.md")
 PROMPT_TG = open(PROMPT_TG_FILE, encoding="utf-8").read() if os.path.exists(PROMPT_TG_FILE) else ""
-BRIDGE_CHANNELS = ("whatsapp", "telegram_friend")
+# channel=secretary (07.10.2026) — незнакомый человек впервые написал хозяину: Алёна отвечает как секретарь, от своего имени
+# (prompt_sekr.md): выясняет, кто и зачем, и передаёт хозяину. Маркеры те же, плюс @@МОЛЧАТЬ@@ для рассылок и кодов.
+PROMPT_SEKR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_sekr.md")
+PROMPT_SEKR = open(PROMPT_SEKR_FILE, encoding="utf-8").read() if os.path.exists(PROMPT_SEKR_FILE) else ""
+BRIDGE_CHANNELS = ("whatsapp", "telegram_friend", "secretary")
 IP_SALT = secrets.token_hex(8)          # соль на время жизни процесса: хеши IP не сопоставимы между рестартами
 
 _lock = threading.Lock()
@@ -206,6 +210,12 @@ def _system(lang, channel="site", note=""):
             {"type": "text", "text": PROMPT_TG or "Ответь ровно одной строкой: @@ХОЗЯИНУ@@ нет подсказки канала",
              "cache_control": {"type": "ephemeral", "ttl": "1h"}},
             {"type": "text", "text": f"Заметка о собеседнике: {note or 'сведений нет — будь особенно осторожна, при сомнении передай хозяину'}"},
+        ]
+    if channel == "secretary":
+        return [
+            {"type": "text", "text": PROMPT_SEKR or "Ответь ровно одной строкой: @@ХОЗЯИНУ@@ нет подсказки канала",
+             "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            {"type": "text", "text": f"Заметка: {note or 'о собеседнике ничего не известно'}"},
         ]
     if channel == "whatsapp":
         return [
@@ -414,7 +424,7 @@ class Handler(BaseHTTPRequestHandler):
             cost = _cost(usage)
             if stop == "refusal":
                 # знакомому хозяина дежурный отказ отправлять нельзя — пусть решает хозяин
-                text = "@@ХОЗЯИНУ@@ модель отказалась отвечать" if channel == "telegram_friend" else REFUSAL_TEXT.get(lang, REFUSAL_TEXT["ru"])
+                text = "@@ХОЗЯИНУ@@ модель отказалась отвечать" if channel in ("telegram_friend", "secretary") else REFUSAL_TEXT.get(lang, REFUSAL_TEXT["ru"])
                 _count("refusals")
             _count("messages", cost)
             _log({"event": "wa_turn" if channel == "whatsapp" else "tg_turn", "session": sid, "lang": lang, "user": msg, "assistant": text, "stop": stop,
