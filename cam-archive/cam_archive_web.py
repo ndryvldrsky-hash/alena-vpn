@@ -167,6 +167,26 @@ def cache_cleaner():
         time.sleep(60)
 
 
+def prepare_all():
+    """10.10.2026: на сервере с двумя и более ядрами (alena-oblako в Oracle) готовить H.264 заранее для всех дописанных
+    минут, от свежих к старым, — плеер открывает любую минуту без ожидания. На одноядерном VPS не запускается."""
+    while True:
+        did = False
+        try:
+            todo = []
+            for cam in cams():
+                for f, start, _, done in chunks(cam):
+                    if done and not os.path.exists(os.path.join(CACHE, cam, f[:-4] + ".mp4")):
+                        todo.append((start, cam, f))
+            todo.sort(reverse=True)
+            for _, cam, f in todo[:6]:
+                ensure_mp4(cam, f, "h264")
+                did = True
+        except Exception:
+            pass
+        time.sleep(1 if did else 10)
+
+
 PAGE = r"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -622,4 +642,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     os.makedirs(CACHE, exist_ok=True)
     threading.Thread(target=cache_cleaner, daemon=True).start()
+    if (os.cpu_count() or 1) >= 2:
+        threading.Thread(target=prepare_all, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", 8080), Handler).serve_forever()

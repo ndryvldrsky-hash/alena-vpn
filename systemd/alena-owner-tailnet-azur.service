@@ -1,0 +1,20 @@
+[Unit]
+Description=Приватная Алёна по тайнету — запасной чат, второй экземпляр на alena-azur (127.0.0.1:8099, наружу — tailscale serve :8443)
+After=network-online.target tailscaled.service
+
+[Service]
+User=alenachat
+EnvironmentFile=/etc/alena-owner/env
+# Очередь поручений включена 11.10.2026: дом (alena_queue_drain.py) обходит оба экземпляра — VPS и этот.
+Environment=OWNER_QUEUE=1
+Environment=OWNER_INSTANCE=alena-azur
+StateDirectory=alena-owner
+ExecStart=/usr/local/lib/alena-owner/venv/bin/python3 /usr/local/lib/alena-owner/app.py
+Restart=always
+RestartSec=5
+Nice=5
+# на машине 0,9 ГБ памяти без подкачки
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

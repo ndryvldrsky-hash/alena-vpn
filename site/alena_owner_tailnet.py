@@ -55,9 +55,24 @@ TZ = ZoneInfo("Asia/Jerusalem")
 MAX_MSG_CHARS = 4000
 MAX_HISTORY = 40                                           # реплик (20 пар); старше — отбрасываем
 QUEUE_MARK = "@@ОЧЕРЕДЬ@@"
+# Второй экземпляр (alena-azur, 11.10.2026): дом забирает очередь только у одного адреса (alena-vpn),
+# поэтому там, где дренера нет, очередь выключают OWNER_QUEUE=0 — иначе поручение молча пропало бы.
+# По умолчанию включена (поведение экземпляра на VPS не меняется).
+QUEUE_ON = os.environ.get("OWNER_QUEUE", "1") != "0"
+INSTANCE = os.environ.get("OWNER_INSTANCE", "")            # имя машины для подписи страницы и промпта
+QUEUE_OFF_NOTE = (
+    "\n\n**ВАЖНО — поправка к сказанному выше для этого экземпляра.** Ты работаешь не на alena-vpn, а на "
+    "втором, запасном экземпляре ({inst}). Очередь поручений дому здесь ВЫКЛЮЧЕНА: дом забирает поручения "
+    "только с основного экземпляра https://alena-vpn.tail603bb5.ts.net:8443. Метку @@ОЧЕРЕДЬ@@ не пиши вовсе. "
+    "Если Андрей просит что-то сделать в доме — прямо скажи, что отсюда поручение до дома не дойдёт, и "
+    "предложи написать его в основном запасном чате (адрес выше) или дождаться дома. Слепок памяти дома "
+    "сюда сам не обновляется — смотри строку о его свежести и предупреждай, если он старый."
+)
 
 client = anthropic.Anthropic()                             # ключ ANTHROPIC_API_KEY из окружения службы
 SYSTEM_PROMPT = open(PROMPT_FILE, encoding="utf-8").read()
+if not QUEUE_ON:
+    SYSTEM_PROMPT += QUEUE_OFF_NOTE.format(inst=INSTANCE or "не alena-vpn")
 _lock = threading.Lock()
 _home_seen = 0.0                                           # когда дом последний раз забирал очередь
 os.makedirs(SESS_DIR, exist_ok=True)
@@ -228,6 +243,12 @@ def handle_chat(payload):
     except Exception as e:
         return {"reply": f"Ошибка связи с моделью: {e}", "queued": []}
     visible, queued = _extract_queue(raw)
+    if not QUEUE_ON and queued:
+        # очередь выключена: ничего не кладём и не молчим — поручение иначе пропало бы незаметно
+        visible = (visible + "\n\n" if visible else "") + (
+            "Поручение дому НЕ поставлено: на этом экземпляре очередь выключена. Напиши его в основном "
+            "запасном чате https://alena-vpn.tail603bb5.ts.net:8443 —\n" + "\n".join("• " + q for q in queued))
+        queued = []
     added = [_queue_add(q)["text"] for q in queued]
     if added and not visible:
         visible = "Приняла, поставила в очередь дому:\n" + "\n".join("• " + a for a in added)
@@ -253,20 +274,26 @@ form{display:flex;gap:8px;padding:10px;border-top:1px solid #222}
 textarea{flex:1;background:#0b0e12;color:#d7dde3;border:1px solid #30363d;border-radius:10px;padding:9px;font:inherit;resize:none;height:44px}
 button{background:#1f6feb;color:#fff;border:0;border-radius:10px;padding:0 16px;font:inherit;cursor:pointer}
 button:disabled{opacity:.5}</style></head><body><div id=wrap>
-<header><span id=dot></span><span>Алёна · запасной чат (тайнет)</span></header>
+<header><span id=dot></span><span>Алёна · запасной чат (тайнет)__INSTANCE__</span></header>
 <div id=log></div>
 <form id=f><textarea id=t placeholder="Написать Алёне…" autofocus></textarea><button id=b>→</button></form>
 </div><script>
 const log=document.getElementById('log'),t=document.getElementById('t'),f=document.getElementById('f'),b=document.getElementById('b');
 const sid=localStorage.getItem('al_sid')||(localStorage.setItem('al_sid',Math.random().toString(36).slice(2)),localStorage.getItem('al_sid'));
 function add(cls,txt){const d=document.createElement('div');d.className='msg '+cls;d.textContent=txt;log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
-add('sys','Приватный канал по тайнету. Поручения дому ставятся в очередь и выполнятся, когда дом вернётся.');
+add('sys','__HINT__');
 f.onsubmit=async e=>{e.preventDefault();const m=t.value.trim();if(!m)return;t.value='';add('me',m);b.disabled=true;
 const w=add('al','…');
 try{const r=await fetch('/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({session:sid,message:m})});
 const j=await r.json();w.textContent=j.reply||'(пусто)';}catch(err){w.textContent='Нет связи: '+err}b.disabled=false;t.focus()};
 t.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();f.requestSubmit()}});
 </script></body></html>"""
+
+
+PAGE = PAGE.replace("__INSTANCE__", " · " + INSTANCE if INSTANCE else "").replace(
+    "__HINT__", "Приватный канал по тайнету. Поручения дому ставятся в очередь и выполнятся, когда дом вернётся."
+    if QUEUE_ON else "Приватный канал по тайнету, второй экземпляр: только разговор. Поручения дому отсюда "
+                     "не уходят — для них основной чат alena-vpn:8443.")
 
 
 class H(BaseHTTPRequestHandler):
