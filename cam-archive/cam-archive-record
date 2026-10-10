@@ -1,6 +1,7 @@
 #!/bin/bash
 # Запись субпотока камеры с go2rtc Frigate (Оптиплекс 192.168.77.2:28554 — порт RTSP Frigate на хосте, через WireGuard и Коин) — без перекодирования,
 # минутными кусками. Хранятся последние 6 часов (чистит cam-archive-clean.timer). 2026-09-17.
+# 2026-10-10: адрес go2rtc — из RTSP_HOST в rtsp.env (на alena-oblako в Oracle — Кузница по тайлнету).
 # $1 — имя камеры во Frigate; поток берётся как <камера>_sub (или основной — см. case ниже). Креды — /etc/cam-archive/rtsp.env (EnvironmentFile службы).
 set -eu
 CAM=$1; DIR=/var/lib/cam-archive/$CAM
@@ -19,7 +20,7 @@ esac
 # нарезал куски по 2 с вместо минуты (2026-09-17: 427 файлов за полчаса) — время берём по часам сервера.
 exec ffmpeg -hide_banner -loglevel warning -nostdin \
   -rtsp_transport tcp -timeout 15000000 -use_wallclock_as_timestamps 1 -fflags +genpts \
-  -i "rtsp://${RTSP_USER}:${RTSP_PASS}@192.168.77.2:28554/${STREAM}" \
+  -i "rtsp://${RTSP_USER}:${RTSP_PASS}@${RTSP_HOST:-192.168.77.2:28554}/${STREAM}" \
   -map 0 -c copy \
   -f segment -segment_time 60 -segment_format matroska -reset_timestamps 1 -strftime 1 \
   "$DIR/%Y%m%d_%H%M%S.mkv"

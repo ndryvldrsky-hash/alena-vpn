@@ -4,8 +4,8 @@
 # (рукопожатие/трафик), Tailscale, скорость на eth0/wg0 за 2 с. Состояние для HA — число проблем (0 = ок).
 import json, os, shutil, subprocess, time
 
-SERVICES = ["wg-quick@wg0", "nftables", "tailscaled", "cam-archive-web", "cam-archive-clean.timer",
-            "cam-archive-watchdog.timer", "iperf3-wg", "nginx", "alena-chat"]
+# 10.10.2026: архив камер переехал на alena-oblako (Oracle) — его службы здесь выключены и из проверки убраны
+SERVICES = ["wg-quick@wg0", "nftables", "tailscaled", "iperf3-wg", "nginx", "alena-chat"]
 PEERS = {"10.77.0.2/32": "Коин wg-vps", "10.77.0.3/32": "Коин wg-vps2"}
 
 

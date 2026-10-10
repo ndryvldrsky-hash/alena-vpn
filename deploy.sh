@@ -12,11 +12,9 @@ SSH="ssh -F /config/.ssh/config do-vpn"
 SCP="scp -F /config/.ssh/config"
 
 # файл в репозитории → путь на VPS, режим
+# 10.10.2026: архив камер и его плеер переехали на alena-oblako (Oracle Cloud) — их выкладывает deploy_oblako.sh,
+# на этом VPS их службы выключены.
 FILES=(
-  "cam-archive/cam-archive-record|/usr/local/sbin/cam-archive-record|755"
-  "cam-archive/cam-archive-status|/usr/local/sbin/cam-archive-status|755"
-  "cam-archive/cam-archive-watchdog|/usr/local/sbin/cam-archive-watchdog|755"
-  "cam-archive/cam-archive-pause|/usr/local/sbin/cam-archive-pause|755"
   "cam-archive/vps-status|/usr/local/sbin/vps-status|755"
   "cam-archive/vps-control|/usr/local/sbin/vps-control|755"
   "site/site-status|/usr/local/sbin/site-status|755"
@@ -43,15 +41,7 @@ FILES=(
   "site/alena_owner_tailnet.py|/usr/local/lib/alena-owner/app.py|644"
   "site/alena_owner_tailnet_prompt.md|/usr/local/lib/alena-owner/owner_prompt.md|644"
   "systemd/alena-owner-tailnet.service|/etc/systemd/system/alena-owner-tailnet.service|644"
-  "systemd/cam-archive-watchdog.service|/etc/systemd/system/cam-archive-watchdog.service|644"
-  "systemd/cam-archive-watchdog.timer|/etc/systemd/system/cam-archive-watchdog.timer|644"
-  "cam-archive/cam_archive_web.py|/usr/local/lib/cam-archive-web/app.py|755"
-  "systemd/cam-archive@.service|/etc/systemd/system/cam-archive@.service|644"
-  "systemd/cam-archive-clean.service|/etc/systemd/system/cam-archive-clean.service|644"
-  "systemd/cam-archive-clean.timer|/etc/systemd/system/cam-archive-clean.timer|644"
-  "systemd/cam-archive-web.service|/etc/systemd/system/cam-archive-web.service|644"
   "systemd/iperf3-wg.service|/etc/systemd/system/iperf3-wg.service|644"
-  "secrets/rtsp.env|/etc/cam-archive/rtsp.env|600"
 )
 # только забираются (pull), не выкладываются
 PULL_ONLY=(
