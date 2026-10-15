@@ -130,11 +130,11 @@ def _queue_write(items):
     os.replace(tmp, QUEUE_FILE)
 
 
-def _queue_add(instruction):
+def _queue_add(instruction, status="pending", reported=False):
     with _lock:
         items = _queue_all()
         item = {"id": secrets.token_hex(6), "ts": time.time(), "at": _now(),
-                "text": instruction, "status": "pending", "result": "", "reported": False}
+                "text": instruction, "status": status, "result": "", "reported": reported}
         items.append(item)
         _queue_write(items)
     return item
@@ -351,6 +351,18 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"ok": True, "bytes": len(raw)}))
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)[:200]}))
+        if self.path == "/enqueue":
+            # 15.10.2026: поручение напрямую в очередь, без модели (обращения хозяина «Алёна, …» из мессенджеров;
+            # дом забирает их своим дренером). probe=true — проба: кладётся уже отменённым, дом её не исполнит.
+            if not self._auth():
+                return self._send(403, json.dumps({"error": "forbidden"}))
+            p = self._body()
+            text = str(p.get("text", "")).strip()[:8000]
+            if not text:
+                return self._send(400, json.dumps({"error": "пустой текст"}))
+            probe = bool(p.get("probe"))
+            item = _queue_add(text, status="cancelled" if probe else "pending", reported=probe)
+            return self._send(200, json.dumps({"ok": True, "id": item["id"], "status": item["status"]}))
         if self.path == "/result":
             if not self._auth():
                 return self._send(403, json.dumps({"error": "forbidden"}))
