@@ -3,19 +3,25 @@
 # плюс свободное место. Камера «пишется», если служба active и последний кусок менялся < 180 с назад (tambur ночью ~26 кбит/с — ffmpeg сбрасывает порциями по 256 КБ раз в ~80 с). 2026-09-17.
 import json, os, shutil, subprocess, time
 BASE = "/var/lib/cam-archive"
-now = time.time(); cams = {}; ok = 0
+MIN_BYTES = 20 * 1024
+now = time.time(); cams = {}; ok = 0; total_off = 0
 paused = os.path.exists(os.path.join(BASE, ".paused"))  # cam-archive-pause on (туннель через телефон)
 for c in sorted(os.listdir(BASE)):
     d = os.path.join(BASE, c)
     if c == "events" or not os.path.isdir(d): continue  # events — папка событий Frigate для плеера, не камера
-    files = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".mkv")]
+    allf = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".mkv")]
+    # 2026-10-28: «настоящий» кусок — не меньше 20 КБ; мусор (665 байт при сбое меток) записью не считается
+    files = [f for f in allf if os.path.getsize(f) >= MIN_BYTES]
+    junk = len(allf) - len(files)
     age = int(now - max(os.path.getmtime(f) for f in files)) if files else None
     active = subprocess.run(["systemctl", "is-active", f"cam-archive@{c}"], capture_output=True, text=True).stdout.strip()
+    waiting = os.path.exists(os.path.join(d, ".off"))  # камера выключена во Frigate, служба ждёт
     rec = active == "active" and age is not None and age < 180
     ok += rec
-    cams[c] = {"recording": rec, "service": active, "last_age_s": age, "minutes": len(files),
+    total_off += waiting
+    cams[c] = {"recording": rec, "service": active, "waiting": waiting, "junk": junk, "last_age_s": age, "minutes": len(files),
                "mb": round(sum(os.path.getsize(f) for f in files) / 1048576, 1)}
 du = shutil.disk_usage("/")
-print(json.dumps({"recording": ok, "total": len(cams), "paused": paused, "cameras": cams,
+print(json.dumps({"recording": ok, "total": len(cams) - total_off, "paused": paused, "cameras": cams,
                   "archive_mb": round(sum(v["mb"] for v in cams.values()), 1),
                   "disk_free_gb": round(du.free / 1073741824, 2)}, ensure_ascii=False))

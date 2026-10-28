@@ -2,9 +2,12 @@
 # Запись субпотока камеры с go2rtc Frigate (Оптиплекс 192.168.77.2:28554 — порт RTSP Frigate на хосте, через WireGuard и Коин) — без перекодирования,
 # минутными кусками. Хранятся последние 6 часов (чистит cam-archive-clean.timer). 2026-09-17.
 # 2026-10-10: адрес go2rtc — из RTSP_HOST в rtsp.env (на alena-oblako в Oracle — Кузница по тайлнету).
+# 2026-10-28: камера выключена во Frigate (cam-archive-enabled) — ffmpeg не запускаем, служба тихо ждёт (без кругов
+# перезапуска systemd, было 45 тыс. у imac). Раз в 60 с спрашиваем снова; включили — пишем, выключили на ходу — останавливаем.
+# Смена состояния — одна строка в журнал. Флаг <каталог камеры>/.off читают сторож и cam-archive-status.
 # $1 — имя камеры во Frigate; поток берётся как <камера>_sub (или основной — см. case ниже). Креды — /etc/cam-archive/rtsp.env (EnvironmentFile службы).
 set -eu
-CAM=$1; DIR=/var/lib/cam-archive/$CAM
+CAM=$1; DIR=/var/lib/cam-archive/$CAM; FLAG=$DIR/.off
 mkdir -p "$DIR"
 # 2026-09-18: у axis_2100 субпотока нет (мост на Оптиплексе, 480x640 с потолком 400 кбит/с) — пишем основной поток;
 # imac_sub кодирует сам Мак (VideoToolbox), xps_sub — сам XPS (libx264 640x360 10 к/с), у остальных камер свои субпотоки.
@@ -14,13 +17,50 @@ case "$CAM" in
   axis_2100) STREAM=$CAM ;;
   *) STREAM=${CAM}_sub ;;
 esac
+# 2026-10-28: tambur_sub (HEVC от перекодировщика Кузницы) отдаёт первый пакет-ключевой кадр БЕЗ меток времени, остальные —
+# с dts=pts предыдущего; ffmpeg -c copy падал «Can't write packet with unknown timestamp», в архиве копились куски по 665 байт
+# (круг перезапусков с 18.10, 91 тыс. «Timestamps are unset»). Для tambur метки чиним фильтром setts: пакет без меток → 0,
+# dts = pts (кадры без B-кадров). Для остальных камер — как было.
+BSF=""; LOG=warning
+case "$CAM" in
+  tambur) BSF="-bsf:v setts=pts=if(eq(PTS\,NOPTS)\,0\,PTS):dts=if(eq(PTS\,NOPTS)\,0\,PTS)"; LOG=error ;;  # error — чтобы «Non-monotonic DTS» не засоряли журнал
+esac
+
+PID=
+trap '[ -n "$PID" ] && kill "$PID" 2>/dev/null; rm -f "$FLAG"; exit 0' TERM INT
+
+# ждём, пока камера выключена
+if ! /usr/local/sbin/cam-archive-enabled "$CAM"; then
+  echo "$CAM: ждёт — камера выключена во Frigate"
+  touch "$FLAG"
+  until /usr/local/sbin/cam-archive-enabled "$CAM"; do sleep 60 & wait $!; done
+  rm -f "$FLAG"
+  echo "$CAM: камера включена — запись началась"
+fi
+
 # mkv, а не mp4: субпотоки HEVC со звуком G.711 A-law, в mp4 такой звук нормально не кладётся.
 # -timeout (мкс) — обрыв RTSP завершает ffmpeg, systemd перезапускает.
 # -use_wallclock_as_timestamps: камера после переподключения отдаёт ломаные метки (Non-monotonic DTS), и сегментатор
 # нарезал куски по 2 с вместо минуты (2026-09-17: 427 файлов за полчаса) — время берём по часам сервера.
-exec ffmpeg -hide_banner -loglevel warning -nostdin \
+ffmpeg -hide_banner -loglevel "$LOG" -nostdin \
   -rtsp_transport tcp -timeout 15000000 -use_wallclock_as_timestamps 1 -fflags +genpts \
   -i "rtsp://${RTSP_USER}:${RTSP_PASS}@${RTSP_HOST:-192.168.77.2:28554}/${STREAM}" \
-  -map 0 -c copy \
+  -map 0 -c copy $BSF \
   -f segment -segment_time 60 -segment_format matroska -reset_timestamps 1 -strftime 1 \
-  "$DIR/%Y%m%d_%H%M%S.mkv"
+  "$DIR/%Y%m%d_%H%M%S.mkv" &
+PID=$!
+
+# пока ffmpeg пишет, раз в 60 с проверяем, не выключили ли камеру
+while kill -0 "$PID" 2>/dev/null; do
+  sleep 60 & wait $! || true
+  kill -0 "$PID" 2>/dev/null || break
+  if ! /usr/local/sbin/cam-archive-enabled "$CAM"; then
+    echo "$CAM: камера выключена во Frigate — запись остановлена"
+    kill "$PID" 2>/dev/null || true
+    wait "$PID" 2>/dev/null || true
+    PID=
+    exec "$0" "$CAM"   # снова в ожидание (без выхода из службы)
+  fi
+done
+# ffmpeg завершился сам — отдаём его код systemd (перезапуск через RestartSec)
+wait "$PID"

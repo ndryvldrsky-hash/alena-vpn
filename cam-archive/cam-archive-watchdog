@@ -7,7 +7,9 @@ now=$(date +%s)
 for d in /var/lib/cam-archive/*/; do
   cam=$(basename "$d"); [ "$cam" = events ] && continue
   systemctl is-active -q "cam-archive@$cam" || continue
-  newest=$(ls -1t "$d"*.mkv 2>/dev/null | head -1)
+  [ -f "$d.off" ] && continue   # камера выключена во Frigate (cam-archive-record ждёт) — это не поломка
+  # 2026-10-28: «живой» кусок — не меньше 20 КБ (мусор по 665 байт при сбое меток не считается записью)
+  newest=$(find "$d" -maxdepth 1 -name '*.mkv' -size +20k -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
   if [ -z "$newest" ] || [ $((now - $(stat -c %Y "$newest"))) -gt "$STALE" ]; then
     echo "$(date '+%F %T') $cam: новых кусков нет — перезапуск записи"
     systemctl restart "cam-archive@$cam"
