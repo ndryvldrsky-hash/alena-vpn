@@ -1,0 +1,20 @@
+# 2026-11-08: витрина для Reality (self-steal): настоящий сайт с настоящим сертификатом на этом же адресе.
+server {
+    listen 167.99.95.129:80;
+    server_name vpn.kulagin.org;
+    root /var/www/vpn.kulagin.org;
+    location /.well-known/acme-challenge/ { allow all; }
+    location / { try_files $uri $uri/ =404; }  # 2026-11-08: без редиректа — сюда падает fallback Xray (TLS-режим)
+}
+server {
+    listen 127.0.0.1:4443 ssl proxy_protocol;
+    listen 167.99.95.129:4443 ssl;  # dest для Reality на Кузнице (2026-11-08)
+    http2 on;
+    server_name vpn.kulagin.org;
+    root /var/www/vpn.kulagin.org;
+    ssl_certificate /etc/letsencrypt/live/vpn.kulagin.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/vpn.kulagin.org/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    location / { try_files $uri $uri/ =404; }
+}
