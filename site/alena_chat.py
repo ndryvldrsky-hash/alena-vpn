@@ -6,7 +6,8 @@
 доступа внутрь дома: он только объясняет суть идеи и собирает контакт. Суть идеи — в prompt.md рядом.
 
 Как устроено:
-  POST /api/chat        {session, lang, message} → ответ потоком SSE: data: {"t": "кусок"} … data: {"done": true}
+  POST /api/chat        {session, lang, message[, mode: "cv"]} → ответ потоком SSE: data: {"t": "кусок"} … data: {"done": true}
+                        (mode=cv — виджет страницы резюме /cv/, свой промпт prompt_cv.md; без mode — главная, как раньше)
   POST /api/chat/end    {session} → диалог завершён (sendBeacon при уходе со страницы), сразу передать Андрею
   GET  /api/chat/health → ok (для сторожа)
 История диалога хранится здесь, в памяти, по id сессии (браузер присылает только новую реплику) — так клиент
@@ -117,6 +118,18 @@ PROMPT_TG = open(PROMPT_TG_FILE, encoding="utf-8").read() if os.path.exists(PROM
 PROMPT_SEKR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_sekr.md")
 PROMPT_SEKR = open(PROMPT_SEKR_FILE, encoding="utf-8").read() if os.path.exists(PROMPT_SEKR_FILE) else ""
 BRIDGE_CHANNELS = ("whatsapp", "telegram_friend", "secretary")
+# Режим cv (09.11.2026, решение хозяина): виджет на странице резюме kulagin.org/cv/ шлёт mode=cv — Алёна отвечает работодателям
+# и рекрутёрам как ассистентка Андрея Володарского, только по фактам из prompt_cv.md (собран из факты_для_анкет.md и резюме),
+# зарплату не называет, собирает контакт и вакансию. Сводка — тем же вебхуком с полем mode=cv (в HA: «[CV]», канал «Работа»).
+PROMPT_CV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_cv.md")
+PROMPT_CV = open(PROMPT_CV_FILE, encoding="utf-8").read() if os.path.exists(PROMPT_CV_FILE) else ""
+REFUSAL_CV = {
+    "ru": "На это я ответить не могу. Давайте вернёмся к вакансии и опыту Андрея.",
+    "en": "I can't help with that. Let's get back to the position and Andrey's experience.",
+    "he": "בזה אני לא יכולה לעזור. נחזור למשרה ולניסיון של אנדריי.",
+    "ar": "لا أستطيع المساعدة في ذلك. لنعد إلى الوظيفة وخبرة أندريه.",
+    "fr": "Je ne peux pas répondre à cela. Revenons au poste et à l’expérience d’Andreï.",
+}
 IP_SALT = secrets.token_hex(8)          # соль на время жизни процесса: хеши IP не сопоставимы между рестартами
 
 _lock = threading.Lock()
@@ -223,6 +236,13 @@ def _system(lang, channel="site", note=""):
             {"type": "text", "text": f"Собеседник: {note or 'сосед из группы'}. Язык по умолчанию: {LANG_NAMES.get(lang, 'иврит')}; "
                                      "отвечай на языке, на котором пишет собеседник."},
         ]
+    if channel == "cv" and PROMPT_CV:
+        return [
+            {"type": "text", "text": PROMPT_CV, "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            {"type": "text", "text": f"Язык страницы у этого посетителя: {LANG_NAMES.get(lang, 'английский')}. "
+                                     "Отвечай на том языке, на котором пишет посетитель; если он ещё ничего не написал "
+                                     "по-человечески (например, только «привет»), — на языке страницы."},
+        ]
     return [
         {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral", "ttl": "1h"}},
         {"type": "text", "text": f"Язык интерфейса сайта у этого посетителя: {LANG_NAMES.get(lang, 'русский')}. "
@@ -290,13 +310,36 @@ SUMMARY_SCHEMA = {
 }
 
 
+SUMMARY_SCHEMA_CV = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "description": "2–4 предложения по-русски: компания и вакансия (если назвали), кто пишет "
+                                                    "(рекрутёр/HR/руководитель), что спрашивали, на что Алёна не смогла ответить "
+                                                    "и что нужно уточнить Андрею, вилка зарплаты, если её назвали"},
+        "contact": {"type": "string", "description": "имя и контакт рекрутёра (почта/телефон/Telegram/LinkedIn), удобное время, или пустая строка"},
+        "intent": {"type": "string", "enum": ["вакансия", "вопрос", "просто поговорить", "спам"]},
+    },
+    "required": ["summary", "contact", "intent"],
+    "additionalProperties": False,
+}
+
+
 def _summarize(sess):
-    transcript = "\n".join(f"{'Посетитель' if m['role'] == 'user' else 'Алёна'}: {m['content']}" for m in sess["messages"])
+    cv = sess.get("channel") == "cv"
+    transcript = "\n".join(f"{('Рекрутёр' if cv else 'Посетитель') if m['role'] == 'user' else 'Алёна'}: {m['content']}" for m in sess["messages"])
+    if cv:
+        system = ("Ты составляешь для Андрея Володарского сводку диалога работодателя или рекрутёра с его ИИ-ассистенткой Алёной "
+                  "на странице резюме kulagin.org/cv/. По-русски, коротко, по делу; имя ассистентки — «Алёна», через ё. "
+                  "intent «вакансия» — если обсуждали конкретную вакансию или собеседование. Контакт — только если его реально написали.")
+        schema = SUMMARY_SCHEMA_CV
+    else:
+        system = ("Ты составляешь для Андрея (владельца kulagin.org) сводку диалога посетителя сайта с его ИИ-ассистенткой Алёной. "
+                  "По-русски, коротко, по делу; имя ассистентки — «Алёна», через ё. Контакт — только если посетитель его реально написал.")
+        schema = SUMMARY_SCHEMA
     try:
         r = client.messages.create(
-            model=MODEL, max_tokens=600, output_config={"effort": "low", "format": {"type": "json_schema", "schema": SUMMARY_SCHEMA}},
-            system="Ты составляешь для Андрея (владельца kulagin.org) сводку диалога посетителя сайта с его ИИ-ассистенткой Алёной. "
-                   "По-русски, коротко, по делу; имя ассистентки — «Алёна», через ё. Контакт — только если посетитель его реально написал.",
+            model=MODEL, max_tokens=600, output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+            system=system,
             messages=[{"role": "user", "content": transcript[:12000]}],
         )
         txt = next(b.text for b in r.content if b.type == "text")
@@ -315,6 +358,7 @@ def _handoff(sess, reason):
     transcript = "\n".join(f"{'👤' if m['role'] == 'user' else '🤖'} {m['content']}" for m in sess["messages"])
     payload = {
         "session": sess["id"], "lang": sess["lang"], "reason": reason,
+        "mode": "cv" if sess.get("channel") == "cv" else "site",
         "started": datetime.fromtimestamp(sess["started"], TZ).strftime("%d.%m %H:%M"),
         "turns": sum(1 for m in sess["messages"] if m["role"] == "user"),
         "summary": summ["summary"], "contact": summ["contact"], "intent": summ["intent"],
@@ -348,7 +392,7 @@ def _handoff(sess, reason):
         if summ["cost_usd"]:
             _stats["today"]["cost_usd"] = round(_stats["today"].get("cost_usd", 0) + summ["cost_usd"], 5)
             _stats["total"]["cost_usd"] = round(_stats["total"].get("cost_usd", 0) + summ["cost_usd"], 5)
-        _stats["last"] = ([{"session": sess["id"], "started": payload["started"], "lang": sess["lang"], "turns": payload["turns"],
+        _stats["last"] = ([{"session": sess["id"], "mode": payload["mode"], "started": payload["started"], "lang": sess["lang"], "turns": payload["turns"],
                             "intent": summ["intent"], "summary": summ["summary"], "contact": summ["contact"],
                             "handoff": "ok" if ok else "ошибка"}] + _stats.get("last", []))[:30]
         _save_stats()
@@ -638,11 +682,12 @@ class Handler(BaseHTTPRequestHandler):
         if history and history[-1]["role"] == "user":
             history.pop()
 
+        mode = "cv" if data.get("mode") == "cv" and PROMPT_CV else "site"
         with _lock:
             sess = _sessions.get(sid)
             if sess is None:
                 sess = _sessions[sid] = {"id": sid, "lang": lang, "ip": iph, "started": time.time(), "last": time.time(),
-                                         "messages": history, "cost": 0.0}
+                                         "messages": history, "cost": 0.0, "channel": mode}
                 _roll_day()
                 _stats["today"]["sessions"] = _stats["today"].get("sessions", 0) + 1
                 _stats["total"]["sessions"] = _stats["total"].get("sessions", 0) + 1
@@ -670,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
             text, usage, stop = _stream_reply(snapshot, send)
             cost = _cost(usage)
             if stop == "refusal":
-                text = REFUSAL_TEXT[lang]
+                text = (REFUSAL_CV if sess.get("channel") == "cv" else REFUSAL_TEXT)[lang]
                 send(text)
                 _count("refusals")
             elif stop == "max_tokens":
@@ -680,7 +725,7 @@ class Handler(BaseHTTPRequestHandler):
                 sess["cost"] += cost
                 sess["last"] = time.time()
             _count("messages", cost)
-            _log({"event": "turn", "session": sid, "lang": lang, "ip": iph, "user": msg, "assistant": text, "stop": stop,
+            _log({"event": "turn", "session": sid, "mode": sess.get("channel", "site"), "lang": lang, "ip": iph, "user": msg, "assistant": text, "stop": stop,
                   "usage": {"in": usage.input_tokens, "out": usage.output_tokens,
                             "cache_read": usage.cache_read_input_tokens or 0, "cache_write": usage.cache_creation_input_tokens or 0},
                   "cost_usd": round(cost, 5)})

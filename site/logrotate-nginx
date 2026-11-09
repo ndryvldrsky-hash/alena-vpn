@@ -1,0 +1,17 @@
+# Ротация журналов nginx на VPS alena-vpn (09.11.2026, решение хозяина). Выкладывает deploy.sh → /etc/logrotate.d/nginx
+# (заменяет стоковый файл пакета nginx: daily/rotate 14). Правило дома: ротация только ПОСЛЕ архивации — журналы каждую ночь
+# забирает логи_машин.py (аддон HA, 05:30, файлы *.log и *.log.* моложе 35 дней) в архив логов backup_logs.sh, а 8 недель
+# хранения здесь больше этого окна, так что каждая ротированная часть успевает попасть в архив до удаления.
+/var/log/nginx/*.log {
+	weekly
+	rotate 8
+	missingok
+	notifempty
+	compress
+	delaycompress
+	create 0640 www-data adm
+	sharedscripts
+	postrotate
+		systemctl reload nginx >/dev/null 2>&1 || true
+	endscript
+}
